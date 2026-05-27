@@ -1,80 +1,29 @@
-# Multi-stage build for minimal final image
-FROM node:22-slim AS builder
+# Dockerfile corrigé — déploiement Railway en mode HTTP/OAuth
+#
+# Corrige le bug "Cannot find package '@modelcontextprotocol/sdk'" de l'image
+# officielle : celle-ci exécute un fichier compilé qui n'embarque PAS ses
+# dépendances (esbuild --packages=external) et ne copie pas node_modules.
+#
+# Ici on installe les dépendances et on lance le serveur via tsx (code source),
+# ce qui démarre proprement. Testé : le serveur HTTP démarre et écoute.
 
-WORKDIR /build
-
-# Copy workspace files
-COPY package.json package-lock.json ./
-COPY tsconfig.base.json ./
-COPY packages/app/package.json ./packages/app/
-
-# Install dependencies
-RUN npm ci --workspace @obsidian-mcp/app --include-workspace-root
-
-# Copy source code and build configuration
-COPY packages/app/src ./packages/app/src
-COPY packages/app/tsconfig.json ./packages/app/
-
-# Build both stdio and http bundles
-RUN npm run build:stdio --workspace @obsidian-mcp/app && \
-    npm run build:http --workspace @obsidian-mcp/app
-
-# Runtime stage - minimal Node.js image
 FROM node:22-slim
 
 WORKDIR /app
 
-# Install git (required for simple-git operations at runtime)
-RUN apt-get update && \
-    apt-get install -y git && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+# git est requis au runtime : le serveur clone/pull ton coffre via simple-git
+RUN apt-get update && apt-get install -y git && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Copy built bundles from builder
-COPY --from=builder /build/packages/app/dist/stdio/index.js ./dist/stdio/index.js
-COPY --from=builder /build/packages/app/dist/http/index.js ./dist/http/index.js
+# Copier tout le code source du dépôt
+COPY . .
 
-# Create entrypoint script inline
-RUN cat > /app/entrypoint.sh <<'EOF'
-#!/bin/sh
-set -e
+# Installer les dépendances de l'app (inclut tsx) + la racine du workspace
+RUN npm ci --workspace @obsidian-mcp/app --include-workspace-root --no-audit --no-fund
 
-# Default mode is stdio if no argument provided
-MODE="${1:-stdio}"
-
-case "$MODE" in
-  stdio)
-    echo "Starting Obsidian MCP Server in stdio mode..."
-    exec node dist/stdio/index.js
-    ;;
-  http)
-    echo "Starting Obsidian MCP Server in http mode..."
-    exec node dist/http/index.js
-    ;;
-  *)
-    echo "Error: Invalid mode '$MODE'. Use 'stdio' or 'http'."
-    echo "Usage: docker run ... obsidian-mcp [stdio|http]"
-    echo "  stdio (default) - Run in stdio mode for local MCP clients"
-    echo "  http            - Run in HTTP mode on port 3000"
-    exit 1
-    ;;
-esac
-EOF
-
-RUN chmod +x /app/entrypoint.sh
-
-# Set environment variables
-ENV NODE_ENV=production \
-    NODE_OPTIONS="--no-warnings" \
-    LOCAL_VAULT_PATH=/app/vaults/vault-local
-
-# Create directory for git clones (vault storage)
+ENV LOCAL_VAULT_PATH=/app/vaults/vault-local
 RUN mkdir -p /app/vaults
 
-# Expose port for HTTP mode (used when running with 'http' argument)
 EXPOSE 3000
 
-# Use custom entrypoint script to handle mode selection
-# Defaults to stdio mode
-ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["stdio"]
+# Démarre le serveur HTTP (OAuth). Il lit automatiquement le PORT fourni par Railway.
+CMD ["npm", "run", "dev:http"]
