@@ -22,6 +22,9 @@ import { setAuthStore } from '@/services/auth';
 import { loadEnv, ensureEnvVars } from '@/env';
 import { MCP_SERVER_INSTRUCTIONS } from '@/server/shared/instructions';
 import { configureLogger } from '@/utils/logger';
+import { createRagService } from '@/services/rag';
+import { registerRagTools } from '@/mcp/rag-tool-registrations';
+import { registerGithubWebhook } from '@/server/local/github-webhook';
 
 loadEnv();
 
@@ -68,8 +71,16 @@ const mcpServer = new McpServer({
 registerTools(mcpServer, () => vaultManager);
 registerResources(mcpServer, () => vaultManager);
 
+// Optional semantic RAG layer (search-cerveau / ask-cerveau). Null unless
+// OPENAI_API_KEY is set — absent config leaves the existing tools untouched.
+const ragService = createRagService(vaultManager);
+if (ragService) {
+  registerRagTools(mcpServer, ragService);
+}
+
 const app = express();
-app.use(express.json());
+// Capture the raw body so the GitHub webhook can verify its HMAC signature.
+app.use(express.json({ verify: (req, _res, buf) => ((req as any).rawBody = buf) }));
 app.use(express.urlencoded({ extended: true }));
 
 registerOAuthRoutes(app, {
@@ -79,6 +90,10 @@ registerOAuthRoutes(app, {
 });
 
 registerMcpRoute(app, mcpServer);
+
+if (ragService) {
+  registerGithubWebhook(app, ragService);
+}
 
 const PORT = parseInt(process.env.PORT || '3000');
 
@@ -111,4 +126,11 @@ Configure ChatGPT/Claude with:
   - Authorization URL: ${BASE_URL}/oauth/authorize
   - Token URL: ${BASE_URL}/oauth/token
   `);
+
+  if (ragService) {
+    ragService
+      .ensureReady()
+      .then(() => console.log('✓ RAG index ready (search-cerveau / ask-cerveau)'))
+      .catch((error: any) => console.error('✗ RAG index build failed:', error?.message ?? error));
+  }
 });

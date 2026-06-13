@@ -17,6 +17,8 @@ import { registerResources } from '@/mcp/resource-registrations';
 import { loadEnv, ensureCoreEnvVars } from '@/env';
 import { MCP_SERVER_INSTRUCTIONS } from '@/server/shared/instructions';
 import { configureLogger } from '@/utils/logger';
+import { createRagService } from '@/services/rag';
+import { registerRagTools } from '@/mcp/rag-tool-registrations';
 
 loadEnv();
 
@@ -55,6 +57,13 @@ console.error(`Vault path: ${LOCAL_VAULT_PATH}`);
 
 registerTools(mcpServer, () => vaultManager);
 registerResources(mcpServer, () => vaultManager);
+
+// Optional semantic RAG layer — registered only when OPENAI_API_KEY is set.
+// The index is built lazily on the first search-cerveau/ask-cerveau call.
+const ragService = createRagService(vaultManager);
+if (ragService) {
+  registerRagTools(mcpServer, ragService);
+}
 
 const transport = new StdioServerTransport();
 await mcpServer.connect(transport);

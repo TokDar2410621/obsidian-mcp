@@ -1,12 +1,13 @@
 # Tool Reference
 
-Complete documentation for all 18 MCP tools provided by the Obsidian MCP Server.
+Complete documentation for all 20 MCP tools provided by the Obsidian MCP Server.
 
 ## Table of Contents
 
 - [File Operations](#file-operations)
 - [Directory Operations](#directory-operations)
 - [Search](#search)
+- [Retrieval (RAG)](#retrieval-rag)
 - [Tag Management](#tag-management)
 - [Journal Logging](#journal-logging)
 
@@ -510,3 +511,69 @@ Implemented OAuth for the MCP server using TypeScript and AWS Lambda.
 - DynamoDB session storage
 - Lambda handler implementation
 ```
+
+## Retrieval (RAG)
+
+Semantic retrieval over the vault using OpenAI embeddings + a local in-memory
+vector index, with answer generation by Claude. These tools are **optional** —
+they are registered only when `OPENAI_API_KEY` is set (and `ask-cerveau`
+additionally requires `ANTHROPIC_API_KEY`). Available in HTTP/stdio modes only.
+See the RAG section of `.env.example` for configuration.
+
+---
+
+### search-cerveau
+
+Semantic search across the vault — finds notes by meaning (embeddings),
+complementing the keyword-based `search-vault`. Returns ranked note chunks.
+
+#### Parameters
+
+- `query` (string, required) - Natural-language query
+- `top_k` (number, optional, default: 8, max: 30) - Number of chunks to return
+- `folder` (string, optional) - Restrict to a path prefix (e.g. `05-projects/`)
+- `tags` (array of strings, optional) - Restrict to notes with any of these frontmatter tags
+
+#### Output
+
+- `results` - Ranked array of `{ path, wikilink, heading, tags, score, excerpt }`
+- `total` (number) - Number of results
+
+#### Example
+
+```
+"Find notes about the Redis dual-database pattern"
+```
+
+---
+
+### ask-cerveau
+
+Answer a question using the knowledge in the vault (full RAG). Retrieves the
+most relevant notes semantically, then has Claude write a grounded answer with
+`[[wikilink]]` citations to the source notes.
+
+#### Parameters
+
+- `question` (string, required) - Question to answer from the vault
+- `top_k` (number, optional, default: 8, max: 30) - Chunks to retrieve as context
+- `folder` (string, optional) - Restrict retrieval to a path prefix
+- `tags` (array of strings, optional) - Restrict retrieval to notes with any of these tags
+
+#### Output
+
+- `answer` (string) - Grounded answer with inline `[[wikilink]]` citations
+- `citations` - Array of `{ path, wikilink, heading, score, excerpt }` for the notes used
+- `used_chunks` (number) - How many chunks were sent to the model as context
+
+#### Example
+
+```
+"What did I decide about Stripe Connect for the SendMeNow project?"
+```
+
+#### Reindexing
+
+The embedding index builds on first boot and updates incrementally. Configure a
+GitHub push webhook to `POST /webhook/github` (with `GITHUB_WEBHOOK_SECRET`) to
+re-embed changed notes automatically on every push.

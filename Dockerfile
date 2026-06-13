@@ -23,6 +23,13 @@ RUN npm ci --workspace @obsidian-mcp/app --include-workspace-root --no-audit --n
 ENV LOCAL_VAULT_PATH=/app/vaults/vault-local
 RUN mkdir -p /app/vaults
 
+# RAG embedding index — MUST live OUTSIDE the vault clone: GitVaultManager runs
+# `git clean fdx` on every sync, which would wipe an index stored in the vault.
+# Mount a Railway volume here to keep the index across redeploys (otherwise it
+# rebuilds on first boot — cheap for a small vault).
+ENV RAG_INDEX_DIR=/app/index
+RUN mkdir -p /app/index
+
 EXPOSE 3000
 
 # Démarre le serveur HTTP (OAuth). Il lit automatiquement le PORT fourni par Railway.
