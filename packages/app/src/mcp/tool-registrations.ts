@@ -9,7 +9,7 @@ type McpToolResult = {
   structuredContent?: Record<string, unknown>;
 };
 
-function formatToolResult(result: ToolResponse): McpToolResult {
+export function formatToolResult(result: ToolResponse): McpToolResult {
   const contentText = result.success
     ? JSON.stringify(result.data ?? {}, null, 2)
     : (result.error ?? 'Unknown error');

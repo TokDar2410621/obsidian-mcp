@@ -94,7 +94,9 @@ npm run cdk:destroy
 
 ### Key Files
 
-**MCP Tool Registration**: `packages/app/src/mcp/tool-registrations.ts` - Registers all 18 MCP tools with the server. Each tool is annotated with hints (readOnlyHint, destructiveHint, idempotentHint, openWorldHint).
+**MCP Tool Registration**: `packages/app/src/mcp/tool-registrations.ts` - Registers the 18 core MCP tools with the server. Each tool is annotated with hints (readOnlyHint, destructiveHint, idempotentHint, openWorldHint).
+
+**Semantic RAG (cerveau)**: `packages/app/src/services/rag/` - Optional semantic search + RAG layer (OpenAI embeddings, in-memory cosine index, Claude answer generation). The two tools (`search-cerveau`, `ask-cerveau`) are registered by `packages/app/src/mcp/rag-tool-registrations.ts`, called **only** from the stdio/http entrypoints — never from `server/lambda/` or `tool-registrations.ts`, so the Anthropic SDK and index code stay out of the bundled Lambda build. Enabled only when `OPENAI_API_KEY` is set. The index is persisted under `RAG_INDEX_DIR` (must be OUTSIDE the vault clone, which `git clean` wipes on every sync). GitHub push webhook at `POST /webhook/github` (HTTP mode) triggers incremental reindexing.
 
 **Tool Definitions**: `packages/app/src/mcp/tool-definitions.ts` - Zod schemas for input/output validation of all tools.
 
@@ -181,15 +183,26 @@ Optional:
 - `SESSION_EXPIRY_MS` - Session lifetime (default: `86400000` = 24 hours)
 - `AWS_REGION` - AWS region (default: `us-east-1`)
 
+Optional for semantic RAG (HTTP/stdio only; absent → cerveau tools not registered):
+
+- `OPENAI_API_KEY` - Enables embeddings + `search-cerveau`
+- `ANTHROPIC_API_KEY` - Enables answer generation + `ask-cerveau` (full RAG)
+- `RAG_EMBEDDING_MODEL` - Embedding model (default: `text-embedding-3-small`)
+- `RAG_GENERATION_MODEL` - Answer model (default: `claude-opus-4-8`)
+- `RAG_INDEX_DIR` - Index location, **outside** the vault clone (default: `./.rag-index`, Docker: `/app/index`)
+- `GITHUB_WEBHOOK_SECRET` - HMAC secret for the `POST /webhook/github` reindex hook
+
 ## Tool Categories
 
-The server provides 18 tools organized into 5 categories:
+The server provides 20 tools organized into 6 categories:
 
 **File Operations (9 tools)**: read-note, read-notes, create-note, edit-note, delete-note, move-note, append-content, patch-content, apply-diff-patch
 
 **Directory Operations (3 tools)**: create-directory, list-files-in-vault, list-files-in-dir
 
 **Search (1 tool)**: search-vault (fuzzy search with fuse.js, optional exact matching, relevance scoring, context lines, file type filtering)
+
+**Retrieval / RAG (2 tools, optional)**: search-cerveau (semantic embedding search), ask-cerveau (full RAG — retrieve + Claude-generated cited answer). HTTP/stdio only; registered only when `OPENAI_API_KEY` is set.
 
 **Tag Management (4 tools)**: add-tags, remove-tags, rename-tag, manage-tags
 

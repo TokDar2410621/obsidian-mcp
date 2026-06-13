@@ -341,3 +341,55 @@ export const LogJournalEntrySchema = {
     entry_timestamp: z.string(),
   },
 };
+
+// --- Semantic RAG (cerveau) -------------------------------------------------
+
+export const SearchCerveauSchema = {
+  inputSchema: {
+    query: z.string().describe('Natural-language query to search the vault by meaning (semantic search)'),
+    top_k: z.number().optional().describe('Number of note chunks to return (default: 8, max: 30)'),
+    folder: z
+      .string()
+      .optional()
+      .describe('Restrict to notes whose path starts with this prefix (e.g. "05-projects/")'),
+    tags: z
+      .array(z.string())
+      .optional()
+      .describe('Restrict to notes whose frontmatter has any of these tags'),
+  },
+  outputSchema: {
+    results: z.array(
+      z.object({
+        path: z.string(),
+        wikilink: z.string(),
+        heading: z.string(),
+        tags: z.array(z.string()),
+        score: z.number(),
+        excerpt: z.string(),
+      }),
+    ),
+    total: z.number(),
+  },
+};
+
+export const AskCerveauSchema = {
+  inputSchema: {
+    question: z.string().describe('Question to answer using the knowledge stored in the vault'),
+    top_k: z.number().optional().describe('Number of note chunks to retrieve as context (default: 8, max: 30)'),
+    folder: z.string().optional().describe('Restrict retrieval to a folder path prefix'),
+    tags: z.array(z.string()).optional().describe('Restrict retrieval to notes with any of these tags'),
+  },
+  outputSchema: {
+    answer: z.string(),
+    citations: z.array(
+      z.object({
+        path: z.string(),
+        wikilink: z.string(),
+        heading: z.string(),
+        score: z.number(),
+        excerpt: z.string(),
+      }),
+    ),
+    used_chunks: z.number(),
+  },
+};

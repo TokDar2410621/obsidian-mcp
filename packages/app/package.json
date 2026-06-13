@@ -20,6 +20,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.104.1",
     "@aws-sdk/client-dynamodb": "^3.540.0",
     "@aws-sdk/util-dynamodb": "^3.540.0",
     "@modelcontextprotocol/sdk": "^1.0.4",
