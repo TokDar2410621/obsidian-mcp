@@ -13,7 +13,8 @@ import type { ToolResponse } from '@/mcp/handlers/types';
 
 // --- tunables ---------------------------------------------------------------
 const LINK_THRESHOLD = 0.42; // min cosine to consider two notes link-worthy
-const LINK_CROSS_FOLDER_BOOST = 0.04; // prioritise "invisible" cross-project links
+const LINK_AUTO_THRESHOLD = 0.8; // ≥ this ⇒ obviously linkable; accept without the LLM gate
+const LINK_CROSS_FOLDER_BOOST = 0.02; // light nudge for "invisible" cross-project links
 const LINK_MAX_CANDIDATES = 20; // cap sent to the LLM (bounds cost)
 const DEFAULT_LINK_TOPK = 12;
 
@@ -21,7 +22,7 @@ const COHERENCE_THRESHOLD = 0.5; // min cosine for a decision/spec pair to be a 
 const DUPLICATE_THRESHOLD = 0.9; // near-identical notes → merge candidates
 const COHERENCE_MAX = 15;
 
-const THEME_THRESHOLD = 0.5; // cosine edge for connected-components clustering
+const THEME_THRESHOLD = 0.6; // cosine edge for clustering (high, to avoid one giant blob)
 const THEME_MIN_SIZE = 3;
 const THEME_MAX = 12;
 const EMERGING_FRACTION = 0.4; // ≥ this share of a cluster in capture folders ⇒ "emerging"
@@ -167,19 +168,26 @@ export class SynapsesService {
       liaison?: string;
     }>(raw);
 
+    // The LLM supplies the liaison text and gates the *mid-confidence* pairs;
+    // very-high-cosine pairs are accepted regardless (deterministic — not at the
+    // mercy of a flaky judge), so near-certain links can't be silently dropped.
+    const verdict = new Map<number, { worthwhile?: boolean; reason?: string; liaison?: string }>();
+    for (const v of judged) if (typeof v?.n === 'number') verdict.set(v.n, v);
+
     const out: LinkSuggestion[] = [];
-    for (const v of judged) {
-      if (!v?.worthwhile) continue;
-      const cand = shortlist[(v.n ?? 0) - 1];
-      if (!cand) continue;
+    shortlist.forEach((cand, i) => {
+      const v = verdict.get(i + 1);
+      const auto = cand.cos >= LINK_AUTO_THRESHOLD;
+      if (!auto && !v?.worthwhile) return;
       out.push({
         a: cand.a.file,
         b: cand.b.file,
         score: round(cand.cos),
-        reason: (v.reason ?? '').trim(),
-        liaison: (v.liaison ?? '').trim(),
+        reason: (v?.reason ?? (auto ? 'Forte similarité sémantique (même sujet).' : '')).trim(),
+        liaison: (v?.liaison ?? '').trim(),
       });
-    }
+    });
+    out.sort((x, y) => y.score - x.score);
     return out.slice(0, topK);
   }
 
@@ -209,8 +217,18 @@ export class SynapsesService {
     }
     if (cands.length === 0) return [];
 
-    cands.sort((x, y) => y.cos - x.cos);
-    const shortlist = cands.slice(0, COHERENCE_MAX);
+    // A pair can be both a decision/spec pair AND a near-duplicate — dedupe so it
+    // isn't judged (and listed) twice.
+    const seen = new Set<string>();
+    const deduped = cands.filter(c => {
+      const key = [c.a.file, c.b.file].sort().join('|');
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    deduped.sort((x, y) => y.cos - x.cos);
+    const shortlist = deduped.slice(0, COHERENCE_MAX);
 
     const prompt = shortlist
       .map(
@@ -249,7 +267,9 @@ export class SynapsesService {
   }
 
   private async computeThemes(args: ThemeArgs): Promise<Theme[]> {
-    const notes = await this.notes(args.folder);
+    // Exclude hub notes (_index, home, anything tagged `hub`): they link to
+    // everything, so leaving them in collapses the graph into one giant cluster.
+    const notes = (await this.notes(args.folder)).filter(n => !isHub(n));
     if (notes.length < THEME_MIN_SIZE) return [];
 
     const minSize = clamp(args.min_cluster_size, THEME_MIN_SIZE, 2, 20);
@@ -292,9 +312,9 @@ export class SynapsesService {
 const LINK_SYSTEM = [
   'Tu analyses un « deuxième cerveau » : des notes Markdown reliées par des wikilinks [[ ]].',
   'On te donne des paires de notes sémantiquement proches mais qui ne sont PAS encore reliées.',
-  'Pour chaque paire, décide si créer un lien [[ ]] entre elles serait RÉELLEMENT utile au propriétaire.',
-  'Sois exigeant : refuse les rapprochements superficiels (juste « même domaine ») ; ne garde que les liens qui apportent une connexion concrète et actionnable.',
-  'Quand worthwhile=true, donne une phrase de liaison courte expliquant le rapport précis entre les deux notes.',
+  "Pour chaque paire, dis si un lien [[ ]] serait utile — Y COMPRIS entre notes d'un même sujet ou d'une même série (relier une série de notes liées est précieux).",
+  'Ne refuse (worthwhile=false) que les rapprochements vraiment hasardeux. Dans le doute, worthwhile=true.',
+  'Donne toujours une phrase de liaison courte expliquant le rapport précis entre les deux notes.',
   'Réponds UNIQUEMENT avec un tableau JSON, un objet par paire (utilise le numéro [n] donné) :',
   '[{"n":1,"worthwhile":true,"reason":"…","liaison":"…"}, {"n":2,"worthwhile":false}]',
 ].join('\n');
@@ -387,6 +407,13 @@ function isDecisionLike(note: NoteVector): boolean {
 
 function isCaptureFolder(file: string): boolean {
   return file.startsWith('01-raw/') || file.startsWith('03-daily/');
+}
+
+/** Hub notes (MOCs / home / `hub`-tagged) bridge everything — keep them out of clustering. */
+function isHub(note: NoteVector): boolean {
+  return (
+    note.tags.includes('hub') || note.file === '00-home.md' || /(^|\/)_index\.md$/i.test(note.file)
+  );
 }
 
 function base(file: string): string {
