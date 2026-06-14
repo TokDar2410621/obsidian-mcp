@@ -190,6 +190,8 @@ Optional for semantic RAG (HTTP/stdio only; absent → cerveau tools not registe
 - `RAG_EMBEDDING_MODEL` - Embedding model (default: `text-embedding-3-small`)
 - `RAG_GENERATION_MODEL` - Answer model (default: `claude-opus-4-8`)
 - `RAG_INDEX_DIR` - Index location, **outside** the vault clone (default: `./.rag-index`, Docker: `/app/index`)
+- `RAG_HYBRID` - Blend BM25 (lexical) + dense vectors via RRF (default: on)
+- `RAG_RERANK` - LLM reranker over the shortlist; on by default when `ANTHROPIC_API_KEY` is set (`RAG_RERANK_MODEL`, default `claude-haiku-4-5`)
 - `GITHUB_WEBHOOK_SECRET` - HMAC secret for the `POST /webhook/github` reindex hook
 
 Optional for Synapses (thinking layer; needs `OPENAI_API_KEY` + `ANTHROPIC_API_KEY`; HTTP/stdio only):
