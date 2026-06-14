@@ -25,6 +25,9 @@ import { configureLogger } from '@/utils/logger';
 import { createRagService } from '@/services/rag';
 import { registerRagTools } from '@/mcp/rag-tool-registrations';
 import { registerGithubWebhook } from '@/server/local/github-webhook';
+import { createSynapsesService } from '@/services/synapses';
+import { registerSynapsesTools } from '@/mcp/synapses-tool-registrations';
+import { scheduleSynapsesDigest } from '@/services/synapses/digest-cron';
 
 loadEnv();
 
@@ -76,6 +79,13 @@ registerResources(mcpServer, () => vaultManager);
 const ragService = createRagService(vaultManager);
 if (ragService) {
   registerRagTools(mcpServer, ragService);
+}
+
+// Optional Synapses "thinking" layer (suggest-links / audit-coherence /
+// find-themes / cerveau-digest). Needs RAG + ANTHROPIC_API_KEY.
+const synapsesService = ragService ? createSynapsesService(ragService) : null;
+if (synapsesService) {
+  registerSynapsesTools(mcpServer, synapsesService);
 }
 
 const app = express();
@@ -130,7 +140,12 @@ Configure ChatGPT/Claude with:
   if (ragService) {
     ragService
       .ensureReady()
-      .then(() => console.log('✓ RAG index ready (search-cerveau / ask-cerveau)'))
+      .then(() => {
+        console.log('✓ RAG index ready (search-cerveau / ask-cerveau)');
+        if (synapsesService) {
+          scheduleSynapsesDigest(synapsesService, vaultManager);
+        }
+      })
       .catch((error: any) => console.error('✗ RAG index build failed:', error?.message ?? error));
   }
 });

@@ -1,6 +1,6 @@
 # Tool Reference
 
-Complete documentation for all 20 MCP tools provided by the Obsidian MCP Server.
+Complete documentation for all 24 MCP tools provided by the Obsidian MCP Server.
 
 ## Table of Contents
 
@@ -8,6 +8,7 @@ Complete documentation for all 20 MCP tools provided by the Obsidian MCP Server.
 - [Directory Operations](#directory-operations)
 - [Search](#search)
 - [Retrieval (RAG)](#retrieval-rag)
+- [Synapses (thinking)](#synapses-thinking)
 - [Tag Management](#tag-management)
 - [Journal Logging](#journal-logging)
 
@@ -577,3 +578,101 @@ most relevant notes semantically, then has Claude write a grounded answer with
 The embedding index builds on first boot and updates incrementally. Configure a
 GitHub push webhook to `POST /webhook/github` (with `GITHUB_WEBHOOK_SECRET`) to
 re-embed changed notes automatically on every push.
+
+## Synapses (thinking)
+
+Synapses reuses the RAG embedding index to compare notes **to each other** (not
+to a query), surfacing connections the vault leaves implicit. All four tools are
+read-only — propose-only, they never edit notes — and are registered only when
+both `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` are set. A weekly cron can also
+write a `00-synapses.md` digest into the vault (see `SYNAPSES_*` in `.env.example`).
+Each analysis is bounded to a single LLM call.
+
+---
+
+### suggest-links
+
+Find pairs of notes that are semantically related but not yet linked by a
+wikilink, prioritising cross-project ("invisible") connections.
+
+#### Parameters
+
+- `folder` (string, optional) - Restrict to notes whose path starts with this prefix
+- `top_k` (number, optional, default: 12, max: 30) - Maximum suggestions to return
+
+#### Output
+
+- `suggestions` - Array of `{ a, b, score, reason, liaison }` (a/b are note paths)
+- `total` (number)
+
+#### Example
+
+```
+"Quels liens manquent dans mon cerveau ?"
+```
+
+---
+
+### audit-coherence
+
+Detect coherence problems across the vault: decisions/specs that contradict each
+other, notes that make others stale, and near-duplicate notes to merge.
+
+#### Parameters
+
+- `folder` (string, optional) - Restrict to notes whose path starts with this prefix
+
+#### Output
+
+- `issues` - Array of `{ type, a, b, score, explanation }` where `type` is `contradiction` | `stale` | `duplicate`
+- `total` (number)
+
+#### Example
+
+```
+"Y a-t-il des décisions qui se contredisent dans mes notes ?"
+```
+
+---
+
+### find-themes
+
+Cluster the vault by meaning and name the emergent themes that cut across
+projects, flagging clusters forming mostly from recent captures/daily notes.
+
+#### Parameters
+
+- `folder` (string, optional) - Restrict to notes whose path starts with this prefix
+- `min_cluster_size` (number, optional, default: 3) - Minimum notes per theme
+
+#### Output
+
+- `themes` - Array of `{ name, summary, notes, emerging }`
+- `total` (number)
+
+#### Example
+
+```
+"Quels thèmes émergent dans mon cerveau en ce moment ?"
+```
+
+---
+
+### cerveau-digest
+
+Run all three analyses and return a single Markdown digest of the vault. Read-only —
+it does not write the digest note (the weekly cron does that).
+
+#### Parameters
+
+_None._
+
+#### Output
+
+- `markdown` (string) - The rendered digest
+
+#### Example
+
+```
+"Fais-moi le bilan Synapses de mon cerveau."
+```
