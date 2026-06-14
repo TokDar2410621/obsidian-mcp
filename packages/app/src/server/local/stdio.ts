@@ -19,6 +19,8 @@ import { MCP_SERVER_INSTRUCTIONS } from '@/server/shared/instructions';
 import { configureLogger } from '@/utils/logger';
 import { createRagService } from '@/services/rag';
 import { registerRagTools } from '@/mcp/rag-tool-registrations';
+import { createSynapsesService } from '@/services/synapses';
+import { registerSynapsesTools } from '@/mcp/synapses-tool-registrations';
 
 loadEnv();
 
@@ -63,6 +65,13 @@ registerResources(mcpServer, () => vaultManager);
 const ragService = createRagService(vaultManager);
 if (ragService) {
   registerRagTools(mcpServer, ragService);
+}
+
+// Optional Synapses "thinking" layer — needs RAG + ANTHROPIC_API_KEY.
+// (No weekly digest cron in stdio mode — that's an HTTP-server concern.)
+const synapsesService = ragService ? createSynapsesService(ragService) : null;
+if (synapsesService) {
+  registerSynapsesTools(mcpServer, synapsesService);
 }
 
 const transport = new StdioServerTransport();

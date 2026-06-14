@@ -95,6 +95,11 @@ export class RagService {
     return this.generator !== null;
   }
 
+  /** Read-only view of the in-memory embedded chunks (consumed by Synapses). */
+  get embeddedChunks(): readonly EmbeddedChunk[] {
+    return this.chunks;
+  }
+
   /** Ensure the index is available, loading from disk or building on first use. */
   async ensureReady(): Promise<void> {
     if (this.loaded) return;

@@ -192,9 +192,15 @@ Optional for semantic RAG (HTTP/stdio only; absent → cerveau tools not registe
 - `RAG_INDEX_DIR` - Index location, **outside** the vault clone (default: `./.rag-index`, Docker: `/app/index`)
 - `GITHUB_WEBHOOK_SECRET` - HMAC secret for the `POST /webhook/github` reindex hook
 
+Optional for Synapses (thinking layer; needs `OPENAI_API_KEY` + `ANTHROPIC_API_KEY`; HTTP/stdio only):
+
+- `SYNAPSES_MODEL` - Model for the Synapses analyses (default: `RAG_GENERATION_MODEL`, else `claude-opus-4-8`)
+- `SYNAPSES_DIGEST` - Weekly `00-synapses.md` digest cron; set `off` to disable (default: on)
+- `SYNAPSES_CRON` - Digest schedule (default: `0 8 * * 1` — Monday 08:00)
+
 ## Tool Categories
 
-The server provides 20 tools organized into 6 categories:
+The server provides 24 tools organized into 7 categories:
 
 **File Operations (9 tools)**: read-note, read-notes, create-note, edit-note, delete-note, move-note, append-content, patch-content, apply-diff-patch
 
@@ -203,6 +209,8 @@ The server provides 20 tools organized into 6 categories:
 **Search (1 tool)**: search-vault (fuzzy search with fuse.js, optional exact matching, relevance scoring, context lines, file type filtering)
 
 **Retrieval / RAG (2 tools, optional)**: search-cerveau (semantic embedding search), ask-cerveau (full RAG — retrieve + Claude-generated cited answer). HTTP/stdio only; registered only when `OPENAI_API_KEY` is set.
+
+**Synapses (4 tools, optional)**: suggest-links (missing wikilinks), audit-coherence (contradictions / stale / duplicates), find-themes (emergent clusters), cerveau-digest (combined Markdown bilan). Read-only; HTTP/stdio only; registered only when `OPENAI_API_KEY` + `ANTHROPIC_API_KEY` are set. A weekly cron writes `00-synapses.md`.
 
 **Tag Management (4 tools)**: add-tags, remove-tags, rename-tag, manage-tags
 

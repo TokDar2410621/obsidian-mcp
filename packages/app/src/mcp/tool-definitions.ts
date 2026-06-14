@@ -393,3 +393,70 @@ export const AskCerveauSchema = {
     used_chunks: z.number(),
   },
 };
+
+// --- Synapses (connections / coherence / themes) ----------------------------
+
+export const SuggestLinksSchema = {
+  inputSchema: {
+    folder: z
+      .string()
+      .optional()
+      .describe('Restrict to notes whose path starts with this prefix (e.g. "05-projects/")'),
+    top_k: z.number().optional().describe('Max number of link suggestions (default: 12, max: 30)'),
+  },
+  outputSchema: {
+    suggestions: z.array(
+      z.object({
+        a: z.string(),
+        b: z.string(),
+        score: z.number(),
+        reason: z.string(),
+        liaison: z.string(),
+      }),
+    ),
+    total: z.number(),
+  },
+};
+
+export const AuditCoherenceSchema = {
+  inputSchema: {
+    folder: z.string().optional().describe('Restrict to notes whose path starts with this prefix'),
+  },
+  outputSchema: {
+    issues: z.array(
+      z.object({
+        type: z.enum(['contradiction', 'stale', 'duplicate']),
+        a: z.string(),
+        b: z.string(),
+        score: z.number(),
+        explanation: z.string(),
+      }),
+    ),
+    total: z.number(),
+  },
+};
+
+export const FindThemesSchema = {
+  inputSchema: {
+    folder: z.string().optional().describe('Restrict to notes whose path starts with this prefix'),
+    min_cluster_size: z.number().optional().describe('Minimum notes per theme (default: 3)'),
+  },
+  outputSchema: {
+    themes: z.array(
+      z.object({
+        name: z.string(),
+        summary: z.string(),
+        notes: z.array(z.string()),
+        emerging: z.boolean(),
+      }),
+    ),
+    total: z.number(),
+  },
+};
+
+export const CerveauDigestSchema = {
+  inputSchema: {},
+  outputSchema: {
+    markdown: z.string(),
+  },
+};
