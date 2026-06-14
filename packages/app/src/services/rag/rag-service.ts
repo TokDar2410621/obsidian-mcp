@@ -2,6 +2,8 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { chunkNote, toWikilink } from '@/services/rag/chunker';
 import { dot, normalize } from '@/services/rag/cosine';
+import { BM25Index, rrf } from '@/services/rag/bm25';
+import type { Reranker } from '@/services/rag/reranker';
 import type {
   AnswerGenerator,
   Chunk,
@@ -19,6 +21,7 @@ const DEFAULT_TOP_K = 8;
 const MAX_TOP_K = 30;
 const MAX_CONTEXT_CHARS = 12000; // budget for ask-cerveau prompt context
 const EXCERPT_CHARS = 240;
+const RERANK_POOL = 24; // shortlist size handed to the reranker
 
 export interface RagServiceOptions {
   reader: VaultReader;
@@ -29,6 +32,10 @@ export interface RagServiceOptions {
   indexFile: string;
   /** When false, the index lives purely in memory (used by tests). */
   persist?: boolean;
+  /** Blend BM25 (lexical) with dense vectors via RRF. Default true. */
+  hybrid?: boolean;
+  /** Optional reranker applied to the fused shortlist. Default null (off). */
+  reranker?: Reranker | null;
 }
 
 interface SearchArgs {
@@ -77,8 +84,11 @@ export class RagService {
   private readonly generator: AnswerGenerator | null;
   private readonly indexFile: string;
   private readonly persist: boolean;
+  private readonly hybrid: boolean;
+  private readonly reranker: Reranker | null;
 
   private chunks: EmbeddedChunk[] = [];
+  private bm25: BM25Index | null = null;
   private loaded = false;
   private loadingPromise: Promise<void> | null = null;
   private refreshPromise: Promise<RefreshResult> | null = null;
@@ -89,6 +99,8 @@ export class RagService {
     this.generator = options.generator;
     this.indexFile = options.indexFile;
     this.persist = options.persist ?? true;
+    this.hybrid = options.hybrid ?? true;
+    this.reranker = options.reranker ?? null;
   }
 
   get canGenerate(): boolean {
@@ -98,6 +110,10 @@ export class RagService {
   /** Read-only view of the in-memory embedded chunks (consumed by Synapses). */
   get embeddedChunks(): readonly EmbeddedChunk[] {
     return this.chunks;
+  }
+
+  private buildLexicalIndex(): void {
+    this.bm25 = this.hybrid ? new BM25Index(this.chunks.map(c => c.text)) : null;
   }
 
   /** Ensure the index is available, loading from disk or building on first use. */
@@ -165,6 +181,7 @@ export class RagService {
       ...chunk,
       embedding: existing.get(chunk.hash) ?? fresh.get(chunk.hash)!,
     }));
+    this.buildLexicalIndex();
     this.loaded = true;
 
     if (this.persist) await this.save();
@@ -240,29 +257,64 @@ export class RagService {
     const [raw] = await this.embedder.embed([query]);
     const queryVec = normalize(raw);
 
-    let pool = this.chunks;
-    if (filters.folder) {
-      const prefix = filters.folder;
-      pool = pool.filter(c => c.file.startsWith(prefix));
+    // Filter to candidate chunk indices.
+    const candidates: number[] = [];
+    for (let i = 0; i < this.chunks.length; i++) {
+      const c = this.chunks[i];
+      if (filters.folder && !c.file.startsWith(filters.folder)) continue;
+      if (filters.tags && filters.tags.length > 0 && !filters.tags.some(t => c.tags.includes(t)))
+        continue;
+      candidates.push(i);
     }
-    if (filters.tags && filters.tags.length > 0) {
-      const wanted = filters.tags;
-      pool = pool.filter(c => wanted.some(t => c.tags.includes(t)));
+    if (candidates.length === 0) return [];
+
+    // Dense ranking (cosine over normalised vectors).
+    const denseScore = new Map<number, number>();
+    for (const i of candidates) denseScore.set(i, dot(queryVec, this.chunks[i].embedding));
+    const denseRanked = [...candidates].sort((a, b) => denseScore.get(b)! - denseScore.get(a)!);
+
+    // Hybrid: blend with BM25 (lexical) via Reciprocal Rank Fusion.
+    let ranked = denseRanked;
+    if (this.hybrid && this.bm25) {
+      const bm25Score = this.bm25.score(query, candidates);
+      if (bm25Score.size > 0) {
+        const bm25Ranked = [...bm25Score.keys()].sort(
+          (a, b) => bm25Score.get(b)! - bm25Score.get(a)!,
+        );
+        ranked = rrf([denseRanked, bm25Ranked]);
+      }
     }
 
-    return pool
-      .map(chunk => ({ chunk, score: dot(queryVec, chunk.embedding) }))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, topK)
-      .map(({ chunk, score }) => ({
+    // Optional rerank over the fused shortlist (cross-encoder style).
+    if (this.reranker && ranked.length > 1) {
+      const pool = ranked.slice(0, RERANK_POOL);
+      try {
+        const order = await this.reranker.rerank(
+          query,
+          pool.map(i => ({ id: String(i), text: this.chunks[i].text })),
+        );
+        const reordered = order.map(Number).filter(i => Number.isInteger(i) && denseScore.has(i));
+        if (reordered.length > 0) {
+          const seen = new Set(reordered);
+          ranked = [...reordered, ...ranked.filter(i => !seen.has(i))];
+        }
+      } catch {
+        // rerank failure is non-fatal — keep the fused order
+      }
+    }
+
+    return ranked.slice(0, topK).map(i => {
+      const chunk = this.chunks[i];
+      return {
         path: chunk.file,
         wikilink: toWikilink(chunk.file),
         heading: chunk.heading,
         tags: chunk.tags,
-        score: Math.round(score * 1000) / 1000,
+        score: Math.round((denseScore.get(i) ?? 0) * 1000) / 1000,
         excerpt: excerpt(chunk.text),
         text: chunk.text,
-      }));
+      };
+    });
   }
 
   private budgetContexts(hits: SearchHit[]): { contexts: GenContext[]; used: SearchHit[] } {
@@ -302,6 +354,7 @@ export class RagService {
         hash: c.hash,
         embedding: decodeVector(c.vector),
       }));
+      this.buildLexicalIndex();
       return this.chunks.length > 0;
     } catch {
       return false;

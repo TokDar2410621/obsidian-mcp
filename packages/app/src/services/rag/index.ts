@@ -4,6 +4,7 @@ import { RagService } from '@/services/rag/rag-service';
 import { OpenAiEmbeddingProvider } from '@/services/rag/embeddings';
 import { AnthropicAnswerGenerator } from '@/services/rag/generator';
 import { GitVaultReader } from '@/services/rag/vault-reader';
+import { AnthropicReranker } from '@/services/rag/reranker';
 
 export { RagService } from '@/services/rag/rag-service';
 export type { RagServiceOptions } from '@/services/rag/rag-service';
@@ -42,11 +43,22 @@ export function createRagService(vault: VaultManager): RagService | null {
 
   const indexDir = process.env.RAG_INDEX_DIR || path.join(process.cwd(), '.rag-index');
 
+  // Advanced retrieval: hybrid (BM25 + dense via RRF) is on by default; an
+  // optional LLM reranker (Haiku) refines the fused shortlist — enabled when an
+  // Anthropic key is present unless RAG_RERANK=off.
+  const hybrid = (process.env.RAG_HYBRID || 'on').toLowerCase() !== 'off';
+  const reranker =
+    anthropicKey && (process.env.RAG_RERANK || 'on').toLowerCase() !== 'off'
+      ? new AnthropicReranker(anthropicKey, process.env.RAG_RERANK_MODEL || 'claude-haiku-4-5')
+      : null;
+
   return new RagService({
     reader: new GitVaultReader(vault),
     embedder,
     generator,
     indexFile: path.join(indexDir, 'cerveau-index.json'),
     persist: true,
+    hybrid,
+    reranker,
   });
 }
