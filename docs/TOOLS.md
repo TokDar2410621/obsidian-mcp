@@ -1,6 +1,6 @@
 # Tool Reference
 
-Complete documentation for all 24 MCP tools provided by the Obsidian MCP Server.
+Complete documentation for all 26 MCP tools provided by the Obsidian MCP Server.
 
 ## Table of Contents
 
@@ -9,6 +9,7 @@ Complete documentation for all 24 MCP tools provided by the Obsidian MCP Server.
 - [Search](#search)
 - [Retrieval (RAG)](#retrieval-rag)
 - [Synapses (thinking)](#synapses-thinking)
+- [GraphRAG](#graphrag)
 - [Tag Management](#tag-management)
 - [Journal Logging](#journal-logging)
 
@@ -675,4 +676,54 @@ _None._
 
 ```
 "Fais-moi le bilan Synapses de mon cerveau."
+```
+
+## GraphRAG
+
+GraphRAG builds a **knowledge graph** (entities + relations extracted from notes) for **multi-hop** reasoning — questions that need to connect facts across notes. Read-only; registered only when both `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` are set. The graph builds on boot and rebuilds incrementally on the push webhook. See `GRAPH_*` in `.env.example`.
+
+---
+
+### graph-cerveau
+
+Answer a question by expanding the knowledge graph around the question's entities and synthesizing a cited, multi-hop answer.
+
+#### Parameters
+
+- `question` (string, required) - Question to answer by reasoning over the graph
+- `depth` (number, optional, default: 2, max: 3) - Graph hops to expand around matched entities
+
+#### Output
+
+- `answer` (string) - Multi-hop answer with `[[wikilink]]` citations
+- `entities` - Entities traversed
+- `relations` - Array of `{ source, relation, target }` triples
+- `notes` - Array of `{ path, wikilink }` for the connected notes
+
+#### Example
+
+```
+"Comment Redis est-il lié à mes différents projets ?"
+```
+
+---
+
+### graph-overview
+
+Structural view of the knowledge graph — communities and hub entities. No LLM call.
+
+#### Parameters
+
+- `min_cluster_size` (number, optional, default: 3) - Minimum entities per community
+
+#### Output
+
+- `entities` / `relations` (numbers) - Graph size
+- `communities` - Array of `{ id, size, entities }` (clusters of connected entities)
+- `hubs` - Array of `{ name, degree, notes }` (most-connected entities)
+
+#### Example
+
+```
+"Montre-moi la structure de mon graphe de connaissances."
 ```

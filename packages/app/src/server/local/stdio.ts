@@ -21,6 +21,8 @@ import { createRagService } from '@/services/rag';
 import { registerRagTools } from '@/mcp/rag-tool-registrations';
 import { createSynapsesService } from '@/services/synapses';
 import { registerSynapsesTools } from '@/mcp/synapses-tool-registrations';
+import { createGraphService } from '@/services/graph';
+import { registerGraphTools } from '@/mcp/graph-tool-registrations';
 
 loadEnv();
 
@@ -72,6 +74,12 @@ if (ragService) {
 const synapsesService = ragService ? createSynapsesService(ragService) : null;
 if (synapsesService) {
   registerSynapsesTools(mcpServer, synapsesService);
+}
+
+// Optional GraphRAG layer — needs RAG + ANTHROPIC_API_KEY. Built lazily on first call.
+const graphService = ragService ? createGraphService(ragService) : null;
+if (graphService) {
+  registerGraphTools(mcpServer, graphService);
 }
 
 const transport = new StdioServerTransport();

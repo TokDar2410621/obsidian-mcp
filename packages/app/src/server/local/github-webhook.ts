@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import type { Express, Request, Response } from 'express';
 import type { RagService } from '@/services/rag';
+import type { GraphService } from '@/services/graph';
 import { logger } from '@/utils/logger';
 
 /**
@@ -25,7 +26,11 @@ export function verifyGithubSignature(
  * incremental reindex in the background and acknowledges immediately (GitHub
  * expects a fast 2xx). No-ops (and logs) if `GITHUB_WEBHOOK_SECRET` is unset.
  */
-export function registerGithubWebhook(app: Express, rag: RagService): boolean {
+export function registerGithubWebhook(
+  app: Express,
+  rag: RagService,
+  graph?: GraphService | null,
+): boolean {
   const secret = process.env.GITHUB_WEBHOOK_SECRET;
   if (!secret) {
     logger.info('GITHUB_WEBHOOK_SECRET not set — POST /webhook/github disabled');
@@ -49,8 +54,14 @@ export function registerGithubWebhook(app: Express, rag: RagService): boolean {
     if (event === 'push') {
       rag
         .refresh()
-        .then(result => logger.info('RAG reindex (webhook) complete', result))
-        .catch(error => logger.error('RAG reindex (webhook) failed', { error: String(error) }));
+        .then(result => {
+          logger.info('RAG reindex (webhook) complete', result);
+          return graph?.build();
+        })
+        .then(g => {
+          if (g) logger.info('Graph rebuild (webhook) complete', g);
+        })
+        .catch(error => logger.error('RAG/graph reindex (webhook) failed', { error: String(error) }));
     }
   });
 

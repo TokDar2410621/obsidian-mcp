@@ -460,3 +460,39 @@ export const CerveauDigestSchema = {
     markdown: z.string(),
   },
 };
+
+// --- GraphRAG ---------------------------------------------------------------
+
+export const GraphCerveauSchema = {
+  inputSchema: {
+    question: z
+      .string()
+      .describe('Question to answer by reasoning over the knowledge graph (multi-hop)'),
+    depth: z
+      .number()
+      .optional()
+      .describe('Graph hops to expand around matched entities (default: 2, max: 3)'),
+  },
+  outputSchema: {
+    answer: z.string(),
+    entities: z.array(z.string()),
+    relations: z.array(
+      z.object({ source: z.string(), relation: z.string(), target: z.string() }),
+    ),
+    notes: z.array(z.object({ path: z.string(), wikilink: z.string() })),
+  },
+};
+
+export const GraphOverviewSchema = {
+  inputSchema: {
+    min_cluster_size: z.number().optional().describe('Minimum entities per community (default: 3)'),
+  },
+  outputSchema: {
+    entities: z.number(),
+    relations: z.number(),
+    communities: z.array(
+      z.object({ id: z.number(), size: z.number(), entities: z.array(z.string()) }),
+    ),
+    hubs: z.array(z.object({ name: z.string(), degree: z.number(), notes: z.number() })),
+  },
+};

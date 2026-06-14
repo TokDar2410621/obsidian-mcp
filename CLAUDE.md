@@ -200,9 +200,14 @@ Optional for Synapses (thinking layer; needs `OPENAI_API_KEY` + `ANTHROPIC_API_K
 - `SYNAPSES_DIGEST` - Weekly `00-synapses.md` digest cron; set `off` to disable (default: on)
 - `SYNAPSES_CRON` - Digest schedule (default: `0 8 * * 1` — Monday 08:00)
 
+Optional for GraphRAG (knowledge graph; needs `OPENAI_API_KEY` + `ANTHROPIC_API_KEY`; HTTP/stdio only):
+
+- `GRAPH_EXTRACT_MODEL` - Per-note entity/relation extraction (default `claude-haiku-4-5`)
+- `GRAPH_MODEL` - Multi-hop synthesis model (default `RAG_GENERATION_MODEL`)
+
 ## Tool Categories
 
-The server provides 24 tools organized into 7 categories:
+The server provides 26 tools organized into 8 categories:
 
 **File Operations (9 tools)**: read-note, read-notes, create-note, edit-note, delete-note, move-note, append-content, patch-content, apply-diff-patch
 
@@ -213,6 +218,8 @@ The server provides 24 tools organized into 7 categories:
 **Retrieval / RAG (2 tools, optional)**: search-cerveau (semantic embedding search), ask-cerveau (full RAG — retrieve + Claude-generated cited answer). HTTP/stdio only; registered only when `OPENAI_API_KEY` is set.
 
 **Synapses (4 tools, optional)**: suggest-links (missing wikilinks), audit-coherence (contradictions / stale / duplicates), find-themes (emergent clusters), cerveau-digest (combined Markdown bilan). Read-only; HTTP/stdio only; registered only when `OPENAI_API_KEY` + `ANTHROPIC_API_KEY` are set. A weekly cron writes `00-synapses.md`.
+
+**GraphRAG (2 tools, optional)**: graph-cerveau (multi-hop QA over an entity/relation knowledge graph), graph-overview (graph structure — communities + hub entities). Read-only; HTTP/stdio only; needs `OPENAI_API_KEY` + `ANTHROPIC_API_KEY`. The graph builds on boot and rebuilds incrementally on the push webhook.
 
 **Tag Management (4 tools)**: add-tags, remove-tags, rename-tag, manage-tags
 
