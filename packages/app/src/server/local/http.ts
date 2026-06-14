@@ -30,6 +30,9 @@ import { registerSynapsesTools } from '@/mcp/synapses-tool-registrations';
 import { scheduleSynapsesDigest } from '@/services/synapses/digest-cron';
 import { createGraphService } from '@/services/graph';
 import { registerGraphTools } from '@/mcp/graph-tool-registrations';
+import { createLearning } from '@/services/learning';
+import { registerLearningTools } from '@/mcp/learning-tool-registrations';
+import { scheduleWeeklyMaintenance } from '@/services/learning/maintenance-cron';
 
 loadEnv();
 
@@ -96,6 +99,14 @@ if (graphService) {
   registerGraphTools(mcpServer, graphService);
 }
 
+// Optional learning loops (remember-preference / consolidate-cerveau / find-gaps).
+// Also injects the feedback memory into ask-cerveau. Needs RAG + ANTHROPIC_API_KEY.
+const learning = ragService ? createLearning(ragService, vaultManager) : null;
+if (learning && ragService) {
+  registerLearningTools(mcpServer, learning.service, learning.store);
+  ragService.setLearningsProvider(() => learning.store.getLearnings());
+}
+
 const app = express();
 // Capture the raw body so the GitHub webhook can verify its HMAC signature.
 app.use(express.json({ verify: (req, _res, buf) => ((req as any).rawBody = buf) }));
@@ -152,6 +163,9 @@ Configure ChatGPT/Claude with:
         console.log('✓ RAG index ready (search-cerveau / ask-cerveau)');
         if (synapsesService) {
           scheduleSynapsesDigest(synapsesService, vaultManager);
+        }
+        if (learning) {
+          scheduleWeeklyMaintenance(learning.service, vaultManager);
         }
         if (graphService) {
           graphService

@@ -205,9 +205,15 @@ Optional for GraphRAG (knowledge graph; needs `OPENAI_API_KEY` + `ANTHROPIC_API_
 - `GRAPH_EXTRACT_MODEL` - Per-note entity/relation extraction (default `claude-haiku-4-5`)
 - `GRAPH_MODEL` - Multi-hop synthesis model (default `RAG_GENERATION_MODEL`)
 
+Optional for the learning loops (feedback / consolidation / gaps; needs `OPENAI_API_KEY` + `ANTHROPIC_API_KEY`; HTTP/stdio only):
+
+- `LEARNING_MODEL` - Model for consolidation/gap analyses (default `RAG_GENERATION_MODEL`)
+- `MAINTENANCE_ENABLED` - Weekly `00-maintenance.md` report cron; `off` to disable (default: on)
+- `MAINTENANCE_CRON` - Maintenance schedule (default: `0 9 * * 1` — Monday 09:00)
+
 ## Tool Categories
 
-The server provides 26 tools organized into 8 categories:
+The server provides 29 tools organized into 9 categories:
 
 **File Operations (9 tools)**: read-note, read-notes, create-note, edit-note, delete-note, move-note, append-content, patch-content, apply-diff-patch
 
@@ -220,6 +226,8 @@ The server provides 26 tools organized into 8 categories:
 **Synapses (4 tools, optional)**: suggest-links (missing wikilinks), audit-coherence (contradictions / stale / duplicates), find-themes (emergent clusters), cerveau-digest (combined Markdown bilan). Read-only; HTTP/stdio only; registered only when `OPENAI_API_KEY` + `ANTHROPIC_API_KEY` are set. A weekly cron writes `00-synapses.md`.
 
 **GraphRAG (2 tools, optional)**: graph-cerveau (multi-hop QA over an entity/relation knowledge graph), graph-overview (graph structure — communities + hub entities). Read-only; HTTP/stdio only; needs `OPENAI_API_KEY` + `ANTHROPIC_API_KEY`. The graph builds on boot and rebuilds incrementally on the push webhook.
+
+**Learning loops (3 tools, optional)**: remember-preference (writes the `_learnings.md` feedback memory, read by ask-cerveau before answering), consolidate-cerveau (propose raw→knowledge promotions/merges), find-gaps (under-documented / stale topics). Needs `OPENAI_API_KEY` + `ANTHROPIC_API_KEY`. A weekly cron writes `00-maintenance.md`.
 
 **Tag Management (4 tools)**: add-tags, remove-tags, rename-tag, manage-tags
 

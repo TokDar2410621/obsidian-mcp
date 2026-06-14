@@ -496,3 +496,40 @@ export const GraphOverviewSchema = {
     hubs: z.array(z.object({ name: z.string(), degree: z.number(), notes: z.number() })),
   },
 };
+
+// --- Learning loops ---------------------------------------------------------
+
+export const RememberPreferenceSchema = {
+  inputSchema: {
+    preference: z
+      .string()
+      .describe('A preference or correction to remember (applied before future answers)'),
+  },
+  outputSchema: {
+    path: z.string(),
+    total: z.number(),
+  },
+};
+
+export const ConsolidateCerveauSchema = {
+  inputSchema: {},
+  outputSchema: {
+    proposals: z.array(
+      z.object({
+        action: z.enum(['promote', 'merge']),
+        title: z.string(),
+        summary: z.string(),
+        sources: z.array(z.string()),
+      }),
+    ),
+    total: z.number(),
+  },
+};
+
+export const FindGapsSchema = {
+  inputSchema: {},
+  outputSchema: {
+    gaps: z.array(z.object({ topic: z.string(), reason: z.string(), suggestion: z.string() })),
+    total: z.number(),
+  },
+};

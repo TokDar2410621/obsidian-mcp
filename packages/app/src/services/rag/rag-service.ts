@@ -89,6 +89,7 @@ export class RagService {
 
   private chunks: EmbeddedChunk[] = [];
   private bm25: BM25Index | null = null;
+  private learningsProvider: (() => Promise<string>) | null = null;
   private loaded = false;
   private loadingPromise: Promise<void> | null = null;
   private refreshPromise: Promise<RefreshResult> | null = null;
@@ -110,6 +111,11 @@ export class RagService {
   /** Read-only view of the in-memory embedded chunks (consumed by Synapses). */
   get embeddedChunks(): readonly EmbeddedChunk[] {
     return this.chunks;
+  }
+
+  /** Inject the feedback memory (`_learnings.md`), prepended to ask-cerveau prompts. */
+  setLearningsProvider(fn: () => Promise<string>): void {
+    this.learningsProvider = fn;
   }
 
   private buildLexicalIndex(): void {
@@ -228,7 +234,7 @@ export class RagService {
       }
 
       const { contexts, used } = this.budgetContexts(hits);
-      const result = await this.generator.generate(args.question, contexts);
+      const result = await this.generator.generate(await this.withLearnings(args.question), contexts);
       if (result.refused) {
         return fail('La génération a été refusée par le modèle (stop_reason: refusal).');
       }
@@ -315,6 +321,15 @@ export class RagService {
         text: chunk.text,
       };
     });
+  }
+
+  /** Prepend the feedback memory to a question so the answer respects it. */
+  private async withLearnings(question: string): Promise<string> {
+    if (!this.learningsProvider) return question;
+    const learnings = await this.learningsProvider().catch(() => '');
+    return learnings
+      ? `[Préférences et corrections de Darius — respecte-les]\n${learnings}\n\n${question}`
+      : question;
   }
 
   private budgetContexts(hits: SearchHit[]): { contexts: GenContext[]; used: SearchHit[] } {
