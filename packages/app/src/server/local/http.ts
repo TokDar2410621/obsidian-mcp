@@ -28,6 +28,8 @@ import { registerGithubWebhook } from '@/server/local/github-webhook';
 import { createSynapsesService } from '@/services/synapses';
 import { registerSynapsesTools } from '@/mcp/synapses-tool-registrations';
 import { scheduleSynapsesDigest } from '@/services/synapses/digest-cron';
+import { createGraphService } from '@/services/graph';
+import { registerGraphTools } from '@/mcp/graph-tool-registrations';
 
 loadEnv();
 
@@ -88,6 +90,12 @@ if (synapsesService) {
   registerSynapsesTools(mcpServer, synapsesService);
 }
 
+// Optional GraphRAG layer (graph-cerveau / graph-overview). Needs RAG + ANTHROPIC_API_KEY.
+const graphService = ragService ? createGraphService(ragService) : null;
+if (graphService) {
+  registerGraphTools(mcpServer, graphService);
+}
+
 const app = express();
 // Capture the raw body so the GitHub webhook can verify its HMAC signature.
 app.use(express.json({ verify: (req, _res, buf) => ((req as any).rawBody = buf) }));
@@ -102,7 +110,7 @@ registerOAuthRoutes(app, {
 registerMcpRoute(app, mcpServer);
 
 if (ragService) {
-  registerGithubWebhook(app, ragService);
+  registerGithubWebhook(app, ragService, graphService);
 }
 
 const PORT = parseInt(process.env.PORT || '3000');
@@ -144,6 +152,16 @@ Configure ChatGPT/Claude with:
         console.log('✓ RAG index ready (search-cerveau / ask-cerveau)');
         if (synapsesService) {
           scheduleSynapsesDigest(synapsesService, vaultManager);
+        }
+        if (graphService) {
+          graphService
+            .build()
+            .then(g =>
+              console.log(
+                `✓ Knowledge graph ready (${g.entities} entities, ${g.relations} relations)`,
+              ),
+            )
+            .catch((error: any) => console.error('✗ Graph build failed:', error?.message ?? error));
         }
       })
       .catch((error: any) => console.error('✗ RAG index build failed:', error?.message ?? error));
