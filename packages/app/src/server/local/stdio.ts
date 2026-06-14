@@ -23,6 +23,8 @@ import { createSynapsesService } from '@/services/synapses';
 import { registerSynapsesTools } from '@/mcp/synapses-tool-registrations';
 import { createGraphService } from '@/services/graph';
 import { registerGraphTools } from '@/mcp/graph-tool-registrations';
+import { createLearning } from '@/services/learning';
+import { registerLearningTools } from '@/mcp/learning-tool-registrations';
 
 loadEnv();
 
@@ -80,6 +82,13 @@ if (synapsesService) {
 const graphService = ragService ? createGraphService(ragService) : null;
 if (graphService) {
   registerGraphTools(mcpServer, graphService);
+}
+
+// Optional learning loops (no maintenance cron in stdio mode).
+const learning = ragService ? createLearning(ragService, vaultManager) : null;
+if (learning && ragService) {
+  registerLearningTools(mcpServer, learning.service, learning.store);
+  ragService.setLearningsProvider(() => learning.store.getLearnings());
 }
 
 const transport = new StdioServerTransport();

@@ -1,6 +1,6 @@
 # Tool Reference
 
-Complete documentation for all 26 MCP tools provided by the Obsidian MCP Server.
+Complete documentation for all 29 MCP tools provided by the Obsidian MCP Server.
 
 ## Table of Contents
 
@@ -10,6 +10,7 @@ Complete documentation for all 26 MCP tools provided by the Obsidian MCP Server.
 - [Retrieval (RAG)](#retrieval-rag)
 - [Synapses (thinking)](#synapses-thinking)
 - [GraphRAG](#graphrag)
+- [Learning loops](#learning-loops)
 - [Tag Management](#tag-management)
 - [Journal Logging](#journal-logging)
 
@@ -726,4 +727,71 @@ Structural view of the knowledge graph — communities and hub entities. No LLM 
 
 ```
 "Montre-moi la structure de mon graphe de connaissances."
+```
+
+## Learning loops
+
+These tools let the vault *learn*: feedback, consolidation, and gap detection. Need both `OPENAI_API_KEY` and `ANTHROPIC_API_KEY`. A weekly cron writes a `00-maintenance.md` report (consolidation + gaps); see `MAINTENANCE_*` / `LEARNING_MODEL` in `.env.example`.
+
+---
+
+### remember-preference
+
+Save a preference or correction to the vault's feedback memory (`_learnings.md`). `ask-cerveau` reads these before answering — the cerveau learns your preferences without retraining.
+
+#### Parameters
+
+- `preference` (string, required) - The preference or correction to remember
+
+#### Output
+
+- `path` (string) - `_learnings.md`
+- `total` (number) - Total stored preferences
+
+#### Example
+
+```
+"Retiens que je préfère des réponses courtes et toujours en français."
+```
+
+---
+
+### consolidate-cerveau
+
+Review raw / daily captures and propose distilled knowledge notes (promote) or merges — the "reflection" step. Propose-only.
+
+#### Parameters
+
+_None._
+
+#### Output
+
+- `proposals` - Array of `{ action: 'promote' | 'merge', title, summary, sources }`
+- `total` (number)
+
+#### Example
+
+```
+"Consolide mes captures récentes en savoir."
+```
+
+---
+
+### find-gaps
+
+Surface gaps: recurring topics without a dedicated note, stale areas, obvious holes. Propose-only.
+
+#### Parameters
+
+_None._
+
+#### Output
+
+- `gaps` - Array of `{ topic, reason, suggestion }`
+- `total` (number)
+
+#### Example
+
+```
+"Qu'est-ce qui manque dans mon cerveau ?"
 ```
