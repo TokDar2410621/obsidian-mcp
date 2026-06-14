@@ -129,6 +129,21 @@ describe('Synapses — suggest-links', () => {
       res.data.suggestions.some((x: any) => x.a.includes('django') || x.b.includes('django')),
     ).toBe(false);
   });
+
+  it('auto-accepts very-high-cosine pairs even when the LLM rejects them', async () => {
+    class RejectAll implements LlmCompleter {
+      readonly model = 'reject';
+      async complete(): Promise<string> {
+        return JSON.stringify([{ n: 1, worthwhile: false }]);
+      }
+    }
+    const rag = await buildRag({
+      '02-knowledge/redis/a.md': '---\ntags: [redis]\n---\n# A\n\nredis redis pattern',
+      '05-projects/smn/b.md': '---\ntags: [redis]\n---\n# B\n\nredis redis channels',
+    });
+    const res = await new SynapsesService({ rag, llm: new RejectAll() }).suggestLinks({});
+    expect(res.data.suggestions.length).toBe(1); // accepted despite the LLM saying no
+  });
 });
 
 describe('Synapses — audit-coherence', () => {
@@ -145,6 +160,24 @@ describe('Synapses — audit-coherence', () => {
     expect(res.success).toBe(true);
     expect(res.data.issues.length).toBe(1);
     expect(res.data.issues[0].type).toBe('contradiction');
+  });
+
+  it('lists a spec/duplicate pair only once (dedup)', async () => {
+    class JudgeBoth implements LlmCompleter {
+      readonly model = 'judge';
+      async complete(): Promise<string> {
+        return JSON.stringify([
+          { n: 1, type: 'contradiction', explanation: 'x' },
+          { n: 2, type: 'contradiction', explanation: 'x' },
+        ]);
+      }
+    }
+    const rag = await buildRag({
+      '05-projects/smn/decisions/a.md': '---\ntags: [decision]\n---\n# A\n\nredis redis db0',
+      '05-projects/smn/decisions/b.md': '---\ntags: [decision]\n---\n# B\n\nredis redis db0',
+    });
+    const res = await new SynapsesService({ rag, llm: new JudgeBoth() }).auditCoherence({});
+    expect(res.data.issues.length).toBe(1); // the same pair must not appear twice
   });
 });
 
@@ -165,6 +198,22 @@ describe('Synapses — find-themes', () => {
     expect(res.data.themes.length).toBe(2);
     expect(res.data.themes.every((t: any) => t.name.length > 0)).toBe(true);
     expect(res.data.themes.every((t: any) => t.notes.length >= 3)).toBe(true);
+  });
+
+  it('excludes hub notes from clustering (no giant blob)', async () => {
+    const rag = await buildRag({
+      '02-knowledge/_index.md': '---\ntags: [hub]\n---\n# Index\n\nredis redis redis',
+      '01-raw/r1.md': '# r1\n\nredis redis',
+      '02-knowledge/redis/r2.md': '# r2\n\nredis redis',
+      '05-projects/p/r3.md': '# r3\n\nredis redis',
+      '02-knowledge/stripe/s1.md': '# s1\n\nstripe stripe',
+      '05-projects/p/s2.md': '# s2\n\nstripe stripe',
+      '01-raw/s3.md': '# s3\n\nstripe stripe',
+    });
+    const res = await new SynapsesService({ rag, llm: new FakeCompleter() }).findThemes({});
+    expect(res.data.themes.length).toBe(2);
+    const all = res.data.themes.flatMap((t: any) => t.notes);
+    expect(all.some((f: string) => f.endsWith('_index.md'))).toBe(false); // hub excluded
   });
 });
 
