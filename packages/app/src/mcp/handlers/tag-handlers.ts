@@ -1,5 +1,23 @@
+import { promises as fs } from 'fs';
+import path from 'path';
 import { VaultManager } from '@/services/vault-manager';
 import type { ToolResponse } from './types';
+
+/**
+ * Read a note body straight off the synced working copy (one disk read), instead
+ * of `vault.readFile()` which re-runs a full git sync (fetch + hard reset) per
+ * call. Vault-wide scans (manage-tags / rename-tag) call this after a single
+ * `listFiles()` sync — turning N git syncs into one and curing the timeouts.
+ */
+async function readBody(vault: VaultManager, relativePath: string): Promise<string> {
+  try {
+    return await fs.readFile(path.join(vault.getVaultPath(), relativePath), 'utf-8');
+  } catch {
+    // Fallback for vault managers whose working copy isn't on disk (e.g. the
+    // in-memory test double). Production GitVaultManager always hits the fast path.
+    return vault.readFile(relativePath);
+  }
+}
 
 export async function handleAddTags(
   vault: VaultManager,
@@ -118,27 +136,28 @@ export async function handleRenameTag(
     const filesAffected: string[] = [];
     let totalReplacements = 0;
 
+    const inlineRe = () =>
+      new RegExp(`#${escapeRegExp(args.old_tag)}\\b`, caseSensitive ? 'g' : 'gi');
+
     for (const filePath of allFiles) {
-      const content = await vault.readFile(filePath);
+      const content = await readBody(vault, filePath);
 
-      if (content.includes(`#${args.old_tag}`)) {
-        const newContent = content.replace(
-          new RegExp(`#${escapeRegExp(args.old_tag)}\\b`, caseSensitive ? 'g' : 'gi'),
-          `#${args.new_tag}`,
-        );
+      // Inline tags (#tag).
+      const inlineMatches = content.match(inlineRe());
+      let newContent = inlineMatches ? content.replace(inlineRe(), `#${args.new_tag}`) : content;
+      let count = inlineMatches?.length || 0;
 
-        const matches = content.match(
-          new RegExp(`#${escapeRegExp(args.old_tag)}\\b`, caseSensitive ? 'g' : 'gi'),
-        );
-        const count = matches?.length || 0;
+      // Frontmatter tags (tags: [a, b] or a YAML block list).
+      const fm = renameFrontmatterTag(newContent, args.old_tag, args.new_tag, caseSensitive);
+      newContent = fm.content;
+      count += fm.count;
 
-        if (count > 0) {
-          filesAffected.push(filePath);
-          totalReplacements += count;
+      if (count > 0) {
+        filesAffected.push(filePath);
+        totalReplacements += count;
 
-          if (!dryRun) {
-            await vault.writeFile(filePath, newContent);
-          }
+        if (!dryRun) {
+          await vault.writeFile(filePath, newContent);
         }
       }
     }
@@ -184,11 +203,14 @@ export async function handleManageTags(
     const tagCounts = new Map<string, Set<string>>();
 
     for (const filePath of allFiles) {
-      const content = await vault.readFile(filePath);
-      const tagMatches = content.matchAll(/#([\w/-]+)/g);
+      const content = await readBody(vault, filePath);
 
-      for (const match of tagMatches) {
-        const tag = match[1];
+      // Union of inline (#tag) and frontmatter (tags: [...]) tags, deduped per file.
+      const fileTags = new Set<string>();
+      for (const match of content.matchAll(/#([\w/-]+)/g)) fileTags.add(match[1]);
+      for (const tag of extractFrontmatterTags(content)) fileTags.add(tag);
+
+      for (const tag of fileTags) {
         if (!tagCounts.has(tag)) {
           tagCounts.set(tag, new Set());
         }
@@ -388,6 +410,120 @@ function parseTagsFromLine(line: string): string[] {
     .split(',')
     .map(t => t.trim())
     .filter(t => t.length > 0);
+}
+
+function stripQuotes(value: string): string {
+  return value.replace(/^['"]|['"]$/g, '').trim();
+}
+
+/** Tags declared in YAML frontmatter (`tags: [a, b]`, `tags: a, b`, or a `- item` block list). */
+function extractFrontmatterTags(content: string): string[] {
+  const lines = content.split('\n');
+  if (lines[0] !== '---') return [];
+
+  let frontmatterEnd = -1;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i] === '---') {
+      frontmatterEnd = i;
+      break;
+    }
+  }
+  if (frontmatterEnd === -1) return [];
+
+  const tags: string[] = [];
+  for (let i = 1; i < frontmatterEnd; i++) {
+    const match = lines[i].match(/^\s*tags:\s*(.*)$/);
+    if (!match) continue;
+
+    const rest = match[1].trim();
+    if (rest.startsWith('[')) {
+      tags.push(...parseTagsFromLine(lines[i]));
+    } else if (rest === '') {
+      for (let j = i + 1; j < frontmatterEnd; j++) {
+        const item = lines[j].match(/^\s*-\s*(.+?)\s*$/);
+        if (!item) break;
+        tags.push(stripQuotes(item[1]));
+      }
+    } else {
+      tags.push(...rest.split(',').map(t => stripQuotes(t.trim())));
+    }
+    break;
+  }
+
+  return tags.filter(Boolean);
+}
+
+/** Rename a tag inside YAML frontmatter (`tags: [...]` array, comma list, or `- item` block). */
+function renameFrontmatterTag(
+  content: string,
+  oldTag: string,
+  newTag: string,
+  caseSensitive: boolean,
+): { content: string; count: number } {
+  const lines = content.split('\n');
+  if (lines[0] !== '---') return { content, count: 0 };
+
+  let frontmatterEnd = -1;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i] === '---') {
+      frontmatterEnd = i;
+      break;
+    }
+  }
+  if (frontmatterEnd === -1) return { content, count: 0 };
+
+  const isMatch = (value: string): boolean =>
+    caseSensitive ? value === oldTag : value.toLowerCase() === oldTag.toLowerCase();
+
+  let count = 0;
+  for (let i = 1; i < frontmatterEnd; i++) {
+    const header = lines[i].match(/^(\s*tags:\s*)(.*)$/);
+    if (!header) continue;
+
+    const prefix = header[1];
+    const rest = header[2].trim();
+
+    if (rest.startsWith('[') && rest.endsWith(']')) {
+      const renamed = rest
+        .slice(1, -1)
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean)
+        .map(item => {
+          if (isMatch(stripQuotes(item))) {
+            count++;
+            return newTag;
+          }
+          return item;
+        });
+      lines[i] = `${prefix}[${renamed.join(', ')}]`;
+    } else if (rest === '') {
+      for (let j = i + 1; j < frontmatterEnd; j++) {
+        const item = lines[j].match(/^(\s*-\s*)(.+?)(\s*)$/);
+        if (!item) break;
+        if (isMatch(stripQuotes(item[2]))) {
+          count++;
+          lines[j] = `${item[1]}${newTag}${item[3]}`;
+        }
+      }
+    } else {
+      const renamed = rest
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean)
+        .map(item => {
+          if (isMatch(stripQuotes(item))) {
+            count++;
+            return newTag;
+          }
+          return item;
+        });
+      lines[i] = `${prefix}${renamed.join(', ')}`;
+    }
+    break;
+  }
+
+  return { content: lines.join('\n'), count };
 }
 
 function escapeRegExp(string: string): string {
