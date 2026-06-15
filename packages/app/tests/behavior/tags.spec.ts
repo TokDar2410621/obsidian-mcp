@@ -338,4 +338,51 @@ describe('Tag tool behaviours', () => {
     expect(result.data.tags[1].tag).toBe('rare');
     expect(result.data.tags[1].count).toBe(1);
   });
+
+  it('counts frontmatter tags, not just inline tags', async () => {
+    const vault = new InMemoryVaultManager({
+      'Notes/fm.md': ['---', 'tags: [alpha, beta]', '---', '', 'Body'].join('\n'),
+      'Notes/mixed.md': ['---', 'tags: [alpha]', '---', '', 'Body #beta'].join('\n'),
+    });
+    harness = new ToolHarness({ vault });
+
+    const result = await harness.invoke('manage-tags', { action: 'count', sort_by: 'name' });
+
+    expect(result.success).toBe(true);
+    expect(result.data.tags).toEqual([
+      { tag: 'alpha', count: 2 },
+      { tag: 'beta', count: 2 },
+    ]);
+    expect(result.data.total_tags).toBe(2);
+  });
+
+  it('renames a tag declared in frontmatter', async () => {
+    const vault = new InMemoryVaultManager({
+      'Notes/fm.md': ['---', 'tags: [legacy, keep]', '---', '', 'Body'].join('\n'),
+    });
+    harness = new ToolHarness({ vault });
+
+    const result = await harness.invoke('rename-tag', { old_tag: 'legacy', new_tag: 'modern' });
+
+    expect(result.success).toBe(true);
+    expect(result.data.total_replacements).toBe(1);
+    expect(result.data.files_affected).toEqual(['Notes/fm.md']);
+    expect(await harness.vault.readFile('Notes/fm.md')).toContain('tags: [modern, keep]');
+  });
+
+  it('renames a tag in both frontmatter and inline body', async () => {
+    const vault = new InMemoryVaultManager({
+      'Notes/both.md': ['---', 'tags: [legacy]', '---', '', 'Body #legacy and #legacy'].join('\n'),
+    });
+    harness = new ToolHarness({ vault });
+
+    const result = await harness.invoke('rename-tag', { old_tag: 'legacy', new_tag: 'modern' });
+
+    expect(result.success).toBe(true);
+    expect(result.data.total_replacements).toBe(3); // 2 inline + 1 frontmatter
+    const updated = await harness.vault.readFile('Notes/both.md');
+    expect(updated).toContain('tags: [modern]');
+    expect(updated).toContain('#modern and #modern');
+    expect(updated).not.toContain('legacy');
+  });
 });
