@@ -7,6 +7,7 @@ import type { ToolResponse } from '@/mcp/handlers';
 type McpToolResult = {
   content: Array<{ type: 'text'; text: string }>;
   structuredContent?: Record<string, unknown>;
+  isError?: boolean;
 };
 
 export function formatToolResult(result: ToolResponse): McpToolResult {
@@ -23,6 +24,14 @@ export function formatToolResult(result: ToolResponse): McpToolResult {
       typeof result.data === 'object' && result.data !== null
         ? (result.data as Record<string, unknown>)
         : { value: result.data };
+  } else if (!result.success) {
+    // Flag tool-execution failures with `isError` so the MCP SDK surfaces the
+    // real error message in `content`. Without it, any tool declaring an
+    // `outputSchema` (all of them) is rejected with -32602 ("output schema but
+    // no structured content was provided") whenever the handler returns an
+    // error envelope — masking the true cause (LLM/API failure, git race,
+    // ENOENT, …) behind a generic protocol error.
+    response.isError = true;
   }
 
   return response;
