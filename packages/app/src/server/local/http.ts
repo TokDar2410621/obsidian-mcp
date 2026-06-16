@@ -17,7 +17,7 @@ import { registerTools } from '@/mcp/tool-registrations';
 import { registerResources } from '@/mcp/resource-registrations';
 import { registerOAuthRoutes } from '@/server/shared/oauth-routes';
 import { registerMcpRoute } from '@/server/shared/mcp-routes';
-import { createInMemoryAuthStore } from '@/services/auth/stores';
+import { createInMemoryAuthStore, createFileAuthStore } from '@/services/auth/stores';
 import { setAuthStore } from '@/services/auth';
 import { loadEnv, ensureEnvVars } from '@/env';
 import { MCP_SERVER_INSTRUCTIONS } from '@/server/shared/instructions';
@@ -49,7 +49,12 @@ try {
   process.exit(1);
 }
 
-setAuthStore(createInMemoryAuthStore());
+// Persist OAuth sessions/tokens to disk when AUTH_STORE_PATH is set (point it at
+// a Railway Volume) so redeploys don't drop the connector; otherwise in-memory.
+const AUTH_STORE_PATH = process.env.AUTH_STORE_PATH;
+setAuthStore(
+  AUTH_STORE_PATH ? createFileAuthStore(AUTH_STORE_PATH) : createInMemoryAuthStore(),
+);
 
 const LOCAL_VAULT_PATH = process.env.LOCAL_VAULT_PATH || './vault-local';
 const OAUTH_CLIENT_ID = process.env.OAUTH_CLIENT_ID || 'obsidian-mcp-client';

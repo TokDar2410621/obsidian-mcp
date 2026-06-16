@@ -10,6 +10,8 @@ export type {
 
 export { InMemoryAuthStore, createInMemoryAuthStore } from './in-memory-store.js';
 
+export { FileAuthStore, createFileAuthStore } from './file-store.js';
+
 export {
   DynamoDbAuthStore,
   createDynamoDbAuthStore,
