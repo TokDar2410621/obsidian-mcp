@@ -21,6 +21,7 @@ export {
 export { getAuthStore, setAuthStore } from './auth-store-singleton.js';
 export {
   createInMemoryAuthStore,
+  createFileAuthStore,
   createDynamoDbAuthStore,
   type DynamoDbAuthStoreOptions,
 } from './stores/index.js';

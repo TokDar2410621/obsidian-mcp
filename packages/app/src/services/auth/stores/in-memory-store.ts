@@ -8,10 +8,16 @@ import type {
 import { logger } from '@/utils/logger';
 
 export class InMemoryAuthStore implements AuthStore {
-  private sessions = new Map<string, SessionData>();
-  private authCodes = new Map<string, AuthCodeData>();
-  private accessTokens = new Map<string, AccessTokenData>();
-  private refreshTokens = new Map<string, RefreshTokenData>();
+  protected sessions = new Map<string, SessionData>();
+  protected authCodes = new Map<string, AuthCodeData>();
+  protected accessTokens = new Map<string, AccessTokenData>();
+  protected refreshTokens = new Map<string, RefreshTokenData>();
+
+  /**
+   * Invoked after every mutation. No-op for the in-memory store; persistent
+   * subclasses (e.g. FileAuthStore) override it to flush state to durable storage.
+   */
+  protected async onChange(): Promise<void> {}
 
   async getSession(sessionId: string): Promise<SessionData | null> {
     const session = this.sessions.get(sessionId);
@@ -34,10 +40,12 @@ export class InMemoryAuthStore implements AuthStore {
         : undefined,
     };
     this.sessions.set(session.sessionId, copy);
+    await this.onChange();
   }
 
   async deleteSession(sessionId: string): Promise<void> {
     this.sessions.delete(sessionId);
+    await this.onChange();
   }
 
   async getAuthCode(code: string): Promise<AuthCodeData | null> {
@@ -46,10 +54,12 @@ export class InMemoryAuthStore implements AuthStore {
 
   async setAuthCode(data: AuthCodeData): Promise<void> {
     this.authCodes.set(data.code, { ...data });
+    await this.onChange();
   }
 
   async deleteAuthCode(code: string): Promise<void> {
     this.authCodes.delete(code);
+    await this.onChange();
   }
 
   async getAccessToken(token: string): Promise<AccessTokenData | null> {
@@ -62,6 +72,7 @@ export class InMemoryAuthStore implements AuthStore {
       refreshToken: data.refreshToken,
       accessToken: data.token,
     });
+    await this.onChange();
   }
 
   async deleteAccessToken(token: string): Promise<void> {
@@ -70,6 +81,7 @@ export class InMemoryAuthStore implements AuthStore {
       this.refreshTokens.delete(data.refreshToken);
     }
     this.accessTokens.delete(token);
+    await this.onChange();
   }
 
   async getRefreshToken(refreshToken: string): Promise<RefreshTokenData | null> {
@@ -78,10 +90,12 @@ export class InMemoryAuthStore implements AuthStore {
 
   async setRefreshToken(data: RefreshTokenData): Promise<void> {
     this.refreshTokens.set(data.refreshToken, { ...data });
+    await this.onChange();
   }
 
   async deleteRefreshToken(refreshToken: string): Promise<void> {
     this.refreshTokens.delete(refreshToken);
+    await this.onChange();
   }
 }
 
