@@ -18,6 +18,8 @@ import { registerResources } from '@/mcp/resource-registrations';
 import { registerOAuthRoutes } from '@/server/shared/oauth-routes';
 import { registerMcpRoute } from '@/server/shared/mcp-routes';
 import { createInMemoryAuthStore, createFileAuthStore } from '@/services/auth/stores';
+// Imported from its own module (not the stores barrel) so `pg` never reaches the lambda bundle.
+import { createPostgresAuthStore } from '@/services/auth/stores/postgres-store';
 import { setAuthStore } from '@/services/auth';
 import { loadEnv, ensureEnvVars } from '@/env';
 import { MCP_SERVER_INSTRUCTIONS } from '@/server/shared/instructions';
@@ -49,11 +51,18 @@ try {
   process.exit(1);
 }
 
-// Persist OAuth sessions/tokens to disk when AUTH_STORE_PATH is set (point it at
-// a Railway Volume) so redeploys don't drop the connector; otherwise in-memory.
+// Persistent OAuth store so redeploys don't drop the connector. Preference:
+//   DATABASE_URL   → Postgres (e.g. a Railway Postgres plugin)
+//   AUTH_STORE_PATH → JSON file (e.g. on a Railway Volume)
+//   otherwise       → in-memory (default; lost on every restart)
+const DATABASE_URL = process.env.DATABASE_URL;
 const AUTH_STORE_PATH = process.env.AUTH_STORE_PATH;
 setAuthStore(
-  AUTH_STORE_PATH ? createFileAuthStore(AUTH_STORE_PATH) : createInMemoryAuthStore(),
+  DATABASE_URL
+    ? createPostgresAuthStore(DATABASE_URL)
+    : AUTH_STORE_PATH
+      ? createFileAuthStore(AUTH_STORE_PATH)
+      : createInMemoryAuthStore(),
 );
 
 const LOCAL_VAULT_PATH = process.env.LOCAL_VAULT_PATH || './vault-local';
