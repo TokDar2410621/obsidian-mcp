@@ -35,6 +35,8 @@ import { registerGraphTools } from '@/mcp/graph-tool-registrations';
 import { createLearning } from '@/services/learning';
 import { registerLearningTools } from '@/mcp/learning-tool-registrations';
 import { scheduleWeeklyMaintenance } from '@/services/learning/maintenance-cron';
+import { createBucketStore } from '@/services/storage/bucket-store';
+import { registerStorageTools } from '@/mcp/storage-tool-registrations';
 
 loadEnv();
 
@@ -119,6 +121,14 @@ const learning = ragService ? createLearning(ragService, vaultManager) : null;
 if (learning && ragService) {
   registerLearningTools(mcpServer, learning.service, learning.store);
   ragService.setLearningsProvider(() => learning.store.getLearnings());
+}
+
+// Optional object-storage tools (put-file / get-file) backed by an S3-compatible
+// bucket (e.g. a Railway Bucket). Null unless the bucket env vars are set — keeps
+// binaries (images, PDFs) out of the git vault. Independent of RAG/Anthropic.
+const bucketStore = createBucketStore();
+if (bucketStore) {
+  registerStorageTools(mcpServer, bucketStore);
 }
 
 const app = express();
