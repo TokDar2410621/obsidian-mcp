@@ -30,6 +30,7 @@
     "express": "^4.21.2",
     "fuse.js": "^7.0.0",
     "node-cron": "^3.0.3",
+    "pdf-parse": "^1.1.1",
     "pg": "^8.13.1",
     "serverless-http": "^3.2.0",
     "simple-git": "^3.27.0",
