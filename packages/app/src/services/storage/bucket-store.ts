@@ -57,19 +57,32 @@ export class S3BucketStore implements BucketStore {
  * path-style buckets.
  */
 export function createBucketStore(): BucketStore | null {
-  const bucket = process.env.BUCKET_NAME || process.env.BUCKET;
-  const endpoint = process.env.BUCKET_ENDPOINT || process.env.ENDPOINT;
-  const accessKeyId =
-    process.env.BUCKET_ACCESS_KEY_ID || process.env.ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID;
+  // Accept both Railway's raw bucket variable names and the AWS-SDK preset names
+  // (AWS_*), so the store works however the bucket was referenced onto the service.
+  const env = process.env;
+  const bucket =
+    env.BUCKET_NAME || env.BUCKET || env.S3_BUCKET || env.AWS_S3_BUCKET || env.AWS_BUCKET;
+  const endpoint =
+    env.BUCKET_ENDPOINT || env.ENDPOINT || env.AWS_ENDPOINT_URL_S3 || env.AWS_ENDPOINT_URL;
+  const accessKeyId = env.BUCKET_ACCESS_KEY_ID || env.ACCESS_KEY_ID || env.AWS_ACCESS_KEY_ID;
   const secretAccessKey =
-    process.env.BUCKET_SECRET_ACCESS_KEY ||
-    process.env.SECRET_ACCESS_KEY ||
-    process.env.AWS_SECRET_ACCESS_KEY;
+    env.BUCKET_SECRET_ACCESS_KEY || env.SECRET_ACCESS_KEY || env.AWS_SECRET_ACCESS_KEY;
 
-  if (!bucket || !endpoint || !accessKeyId || !secretAccessKey) return null;
+  if (!bucket || !endpoint || !accessKeyId || !secretAccessKey) {
+    // Log (booleans only — never secrets) when partially configured, so a missing
+    // variable is visible in the Railway deploy logs instead of silently disabling the tools.
+    if (bucket || endpoint || accessKeyId || secretAccessKey) {
+      logger.info('Bucket store not configured — some variables missing', {
+        bucket: !!bucket,
+        endpoint: !!endpoint,
+        accessKeyId: !!accessKeyId,
+        secretAccessKey: !!secretAccessKey,
+      });
+    }
+    return null;
+  }
 
-  const region =
-    process.env.BUCKET_REGION || process.env.REGION || process.env.AWS_REGION || 'auto';
+  const region = env.BUCKET_REGION || env.REGION || env.AWS_REGION || 'auto';
   const forcePathStyle = (process.env.BUCKET_FORCE_PATH_STYLE || '').toLowerCase() === 'true';
 
   const client = new S3Client({
