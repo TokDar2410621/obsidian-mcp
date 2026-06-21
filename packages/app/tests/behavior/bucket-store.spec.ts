@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { configureLogger } from '@/utils/logger';
-import { createBucketStore } from '@/services/storage/bucket-store';
+import { createBucketStore, contentDispositionFor } from '@/services/storage/bucket-store';
 
 const KEYS = [
   'BUCKET',
@@ -69,5 +69,24 @@ describe('createBucketStore env resolution', () => {
       SECRET_ACCESS_KEY: 's',
     });
     expect(createBucketStore()).toBeNull();
+  });
+});
+
+describe('contentDispositionFor (stored-XSS mitigation)', () => {
+  it('serves known inline-safe types inline (no attachment)', () => {
+    for (const t of ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'application/pdf']) {
+      expect(contentDispositionFor(t)).toBeUndefined();
+    }
+  });
+
+  it('forces attachment for active or unknown content', () => {
+    for (const t of [
+      'image/svg+xml',
+      'text/html',
+      'application/xhtml+xml',
+      'application/octet-stream',
+    ]) {
+      expect(contentDispositionFor(t)).toBe('attachment');
+    }
   });
 });
