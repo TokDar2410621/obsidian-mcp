@@ -1,9 +1,4 @@
-import {
-  S3Client,
-  PutObjectCommand,
-  GetObjectCommand,
-  HeadObjectCommand,
-} from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { logger } from '@/utils/logger';
 
@@ -15,7 +10,24 @@ import { logger } from '@/utils/logger';
 export interface BucketStore {
   put(key: string, body: Buffer, contentType: string): Promise<void>;
   presignGet(key: string, expiresInSeconds: number): Promise<string>;
-  exists(key: string): Promise<boolean>;
+}
+
+/**
+ * Content types we let the bucket serve inline. Everything else (SVG, HTML,
+ * unknown blobs) is stored with `Content-Disposition: attachment` so opening a
+ * presigned URL downloads it instead of letting the browser execute it — an
+ * SVG/HTML payload otherwise runs its embedded script in the bucket's origin.
+ */
+const INLINE_SAFE = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'application/pdf',
+]);
+
+export function contentDispositionFor(contentType: string): 'attachment' | undefined {
+  return INLINE_SAFE.has(contentType) ? undefined : 'attachment';
 }
 
 export class S3BucketStore implements BucketStore {
@@ -26,7 +38,13 @@ export class S3BucketStore implements BucketStore {
 
   async put(key: string, body: Buffer, contentType: string): Promise<void> {
     await this.client.send(
-      new PutObjectCommand({ Bucket: this.bucket, Key: key, Body: body, ContentType: contentType }),
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        Body: body,
+        ContentType: contentType,
+        ContentDisposition: contentDispositionFor(contentType),
+      }),
     );
   }
 
@@ -34,15 +52,6 @@ export class S3BucketStore implements BucketStore {
     return getSignedUrl(this.client, new GetObjectCommand({ Bucket: this.bucket, Key: key }), {
       expiresIn: expiresInSeconds,
     });
-  }
-
-  async exists(key: string): Promise<boolean> {
-    try {
-      await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }));
-      return true;
-    } catch {
-      return false;
-    }
   }
 }
 
@@ -52,13 +61,11 @@ export class S3BucketStore implements BucketStore {
  *
  * Reference a Railway Bucket's variables onto the MCP service. Railway's raw
  * names (`BUCKET`, `ENDPOINT`, `REGION`, `ACCESS_KEY_ID`, `SECRET_ACCESS_KEY`)
- * are picked up directly; `BUCKET_*`-prefixed names take precedence if you want
- * to avoid collisions. Set `BUCKET_FORCE_PATH_STYLE=true` only for legacy
- * path-style buckets.
+ * and the AWS-SDK preset names (`AWS_*`, `S3_BUCKET`, `AWS_ENDPOINT_URL_S3`) are
+ * both picked up; `BUCKET_*`-prefixed names take precedence to avoid collisions.
+ * Set `BUCKET_FORCE_PATH_STYLE=true` only for legacy path-style buckets.
  */
 export function createBucketStore(): BucketStore | null {
-  // Accept both Railway's raw bucket variable names and the AWS-SDK preset names
-  // (AWS_*), so the store works however the bucket was referenced onto the service.
   const env = process.env;
   const bucket =
     env.BUCKET_NAME || env.BUCKET || env.S3_BUCKET || env.AWS_S3_BUCKET || env.AWS_BUCKET;
@@ -83,7 +90,7 @@ export function createBucketStore(): BucketStore | null {
   }
 
   const region = env.BUCKET_REGION || env.REGION || env.AWS_REGION || 'auto';
-  const forcePathStyle = (process.env.BUCKET_FORCE_PATH_STYLE || '').toLowerCase() === 'true';
+  const forcePathStyle = (env.BUCKET_FORCE_PATH_STYLE || '').toLowerCase() === 'true';
 
   const client = new S3Client({
     region,
@@ -92,6 +99,6 @@ export function createBucketStore(): BucketStore | null {
     forcePathStyle,
   });
 
-  logger.info('Creating bucket store', { endpoint, bucket, forcePathStyle });
+  logger.info('Creating bucket store', { endpoint, bucket, region, forcePathStyle });
   return new S3BucketStore(client, bucket);
 }

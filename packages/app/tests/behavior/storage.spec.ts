@@ -11,9 +11,6 @@ class FakeBucket implements BucketStore {
   async presignGet(key: string, expiresIn: number): Promise<string> {
     return `https://bucket.test/${key}?exp=${expiresIn}`;
   }
-  async exists(key: string): Promise<boolean> {
-    return this.objects.has(key);
-  }
 }
 
 const b64 = (s: string) => Buffer.from(s).toString('base64');
@@ -31,40 +28,88 @@ describe('Object-storage tools', () => {
   });
 
   it('put-file builds an image markdown snippet for images', async () => {
-    const bucket = new FakeBucket();
-    const res = await handlePutFile(bucket, { path: 'photo.png', content: b64('x') });
-
+    const res = await handlePutFile(new FakeBucket(), { path: 'photo.png', content: b64('x') });
     expect(res.data!.content_type).toBe('image/png');
     expect((res.data!.markdown as string).startsWith('![')).toBe(true);
   });
 
-  it('put-file rejects files over the 10 MB limit', async () => {
+  it('put-file strips a data: URI prefix and decodes the real bytes', async () => {
     const bucket = new FakeBucket();
-    const big = Buffer.alloc(11 * 1024 * 1024).toString('base64');
-    const res = await handlePutFile(bucket, { path: 'big.bin', content: big });
+    const res = await handlePutFile(bucket, {
+      path: 'img/p.png',
+      content: `data:image/png;base64,${b64('hello')}`,
+    });
+    expect(res.success).toBe(true);
+    expect(bucket.objects.get('img/p.png')?.body.toString()).toBe('hello');
+  });
 
+  it('put-file rejects non-base64 content instead of storing garbage', async () => {
+    const bucket = new FakeBucket();
+    const res = await handlePutFile(bucket, { path: 'x.bin', content: 'not really base64 !!!@@@' });
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/base64/i);
+    expect(bucket.objects.size).toBe(0);
+  });
+
+  it('put-file rejects empty / whitespace-only content', async () => {
+    const res = await handlePutFile(new FakeBucket(), { path: 'x.bin', content: '   ' });
+    expect(res.success).toBe(false);
+  });
+
+  it('put-file rejects files over the 10 MB limit', async () => {
+    const big = Buffer.alloc(11 * 1024 * 1024).toString('base64');
+    const res = await handlePutFile(new FakeBucket(), { path: 'big.bin', content: big });
     expect(res.success).toBe(false);
     expect(res.error).toMatch(/too large/i);
   });
 
-  it('put-file rejects path traversal', async () => {
-    const bucket = new FakeBucket();
-    const res = await handlePutFile(bucket, { path: '../escape.png', content: b64('x') });
+  it('put-file rejects real path-traversal segments', async () => {
+    const res = await handlePutFile(new FakeBucket(), { path: '../escape.png', content: b64('x') });
     expect(res.success).toBe(false);
   });
 
-  it('get-file returns a presigned URL for an existing object', async () => {
+  it('put-file accepts filenames that merely contain ".." (not a traversal segment)', async () => {
     const bucket = new FakeBucket();
-    await bucket.put('img/x.png', Buffer.from('x'), 'image/png');
-    const res = await handleGetFile(bucket, { path: 'img/x.png' });
+    const res = await handlePutFile(bucket, { path: '01-raw/report..2024.pdf', content: b64('x') });
+    expect(res.success).toBe(true);
+    expect(res.data!.key).toBe('01-raw/report..2024.pdf');
+  });
 
+  it('put-file rejects control characters in the path', async () => {
+    const res = await handlePutFile(new FakeBucket(), {
+      path: `a${String.fromCharCode(0)}b.png`,
+      content: b64('x'),
+    });
+    expect(res.success).toBe(false);
+  });
+
+  it('put-file ignores a bogus mime_type and infers from the extension', async () => {
+    const res = await handlePutFile(new FakeBucket(), {
+      path: 'a.png',
+      content: b64('x'),
+      mime_type: 'totally bogus',
+    });
+    expect(res.data!.content_type).toBe('image/png');
+  });
+
+  it('put-file escapes markdown-significant chars in the snippet label', async () => {
+    const res = await handlePutFile(new FakeBucket(), { path: 'a(b).png', content: b64('x') });
+    expect(res.data!.markdown).toContain('a\\(b\\).png');
+  });
+
+  it('get-file returns a presigned URL with no existence pre-check', async () => {
+    const res = await handleGetFile(new FakeBucket(), { path: 'img/x.png' });
     expect(res.success).toBe(true);
     expect(res.data!.url).toContain('img/x.png');
   });
 
-  it('get-file fails when the object is missing', async () => {
+  it('get-file defaults to 1 hour and clamps over-long / non-finite lifetimes', async () => {
     const bucket = new FakeBucket();
-    const res = await handleGetFile(bucket, { path: 'nope.png' });
-    expect(res.success).toBe(false);
+    expect((await handleGetFile(bucket, { path: 'a' })).data!.expires_in).toBe(3600);
+    expect((await handleGetFile(bucket, { path: 'a', expires_in: 99_999_999 })).data!.expires_in).toBe(
+      604800,
+    );
+    expect((await handleGetFile(bucket, { path: 'a', expires_in: NaN })).data!.expires_in).toBe(3600);
+    expect((await handleGetFile(bucket, { path: 'a', expires_in: 1.9 })).data!.expires_in).toBe(1);
   });
 });

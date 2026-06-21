@@ -6,6 +6,7 @@ import type { BucketStore } from '@/services/storage/bucket-store';
 
 const MAX_BYTES = 10 * 1024 * 1024; // 10 MB cap on base64 uploads
 const MAX_EXPIRY = 604800; // 7 days — the SigV4 presigned-URL maximum
+const DEFAULT_GET_EXPIRY = 3600; // 1 hour — a presigned URL is a bearer credential
 
 const MIME: Record<string, string> = {
   png: 'image/png',
@@ -25,20 +26,62 @@ const MIME: Record<string, string> = {
   zip: 'application/zip',
 };
 
+const MIME_RE = /^[a-z]+\/[a-z0-9.+-]+$/i;
+
+/** True if the string contains an ASCII control character (0x00–0x1F or 0x7F). */
+function hasControlChars(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x20 || c === 0x7f) return true;
+  }
+  return false;
+}
+
+/** Extension lookup from the basename only (so `a/b.c/file` and dotfiles behave). */
 function inferMime(key: string): string {
-  const ext = key.split('.').pop()?.toLowerCase() ?? '';
+  const base = key.split('/').pop() ?? '';
+  const dot = base.lastIndexOf('.');
+  const ext = dot > 0 ? base.slice(dot + 1).toLowerCase() : '';
   return MIME[ext] ?? 'application/octet-stream';
 }
 
 function normalizeKey(p: string): string {
   const key = p.replace(/^\/+/, '').trim();
-  if (!key || key.includes('..')) throw new Error(`Invalid path: "${p}"`);
+  if (!key) throw new Error(`Invalid path: "${p}"`);
+  // Reject genuine traversal segments only — not any ".." substring (so
+  // "report..2024.pdf" is fine; S3 keys are a flat namespace anyway).
+  if (key.split('/').some(seg => seg === '..' || seg === '.')) {
+    throw new Error(`Invalid path (traversal segment): "${p}"`);
+  }
+  if (hasControlChars(key)) throw new Error(`Invalid path (control character): "${p}"`);
+  if (Buffer.byteLength(key, 'utf8') > 1024) throw new Error('Key too long (max 1024 bytes).');
   return key;
 }
 
+/**
+ * Decode caller-supplied content. Strips a `data:...;base64,` prefix (LLM clients
+ * commonly emit those) and validates the payload is canonical base64 — Node's
+ * decoder is lenient and would otherwise turn invalid input into silent garbage.
+ */
+function decodeBase64(input: string): { body: Buffer } | { error: string } {
+  const cleaned = input.replace(/^data:[^;,]*;base64,/, '').replace(/\s/g, '');
+  if (cleaned === '') return { error: 'Empty content (expected base64-encoded bytes).' };
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(cleaned)) return { error: 'content is not valid base64.' };
+  const body = Buffer.from(cleaned, 'base64');
+  if (body.toString('base64').replace(/=+$/, '') !== cleaned.replace(/=+$/, '')) {
+    return { error: 'content is not valid base64 (non-canonical or truncated).' };
+  }
+  return { body };
+}
+
 function mdSnippet(key: string, url: string, contentType: string): string {
-  const name = key.split('/').pop() ?? key;
+  const name = (key.split('/').pop() ?? key).replace(/[[\]()\\]/g, '\\$&');
   return contentType.startsWith('image/') ? `![${name}](${url})` : `[${name}](${url})`;
+}
+
+function clampExpiry(value: number | undefined, fallback: number): number {
+  const raw = Number.isFinite(value) ? Math.floor(value as number) : fallback;
+  return Math.min(Math.max(raw, 1), MAX_EXPIRY);
 }
 
 const ok = (data: Record<string, unknown>): ToolResponse => ({
@@ -57,15 +100,18 @@ export async function handlePutFile(
   args: { path: string; content: string; mime_type?: string },
 ): Promise<ToolResponse> {
   try {
-    const body = Buffer.from(args.content, 'base64');
-    if (body.length === 0) return fail('Empty content (expected base64-encoded bytes).');
+    const decoded = decodeBase64(args.content);
+    if ('error' in decoded) return fail(decoded.error);
+    const body = decoded.body;
     if (body.length > MAX_BYTES) {
       return fail(
         `File too large: ${body.length} bytes (max ${MAX_BYTES}). Upload large files directly with a presigned URL instead.`,
       );
     }
     const key = normalizeKey(args.path);
-    const contentType = args.mime_type || inferMime(key);
+    // Trust a caller-supplied mime_type only if it looks like a real MIME; else infer.
+    const contentType =
+      args.mime_type && MIME_RE.test(args.mime_type) ? args.mime_type : inferMime(key);
     await store.put(key, body, contentType);
     const url = await store.presignGet(key, MAX_EXPIRY);
     return ok({
@@ -87,8 +133,10 @@ export async function handleGetFile(
 ): Promise<ToolResponse> {
   try {
     const key = normalizeKey(args.path);
-    if (!(await store.exists(key))) return fail(`No file at "${key}" in the bucket.`);
-    const expiresIn = Math.min(Math.max(args.expires_in ?? MAX_EXPIRY, 1), MAX_EXPIRY);
+    const expiresIn = clampExpiry(args.expires_in, DEFAULT_GET_EXPIRY);
+    // Presigning is offline and never contacts the bucket; the URL itself 404s if
+    // the key is absent, so we don't pre-check existence (it only added a network
+    // round-trip and a misleading "not found" on auth/network errors).
     const url = await store.presignGet(key, expiresIn);
     return ok({ key, url, expires_in: expiresIn });
   } catch (error: any) {
@@ -108,16 +156,14 @@ export function registerStorageTools(server: McpServer, store: BucketStore): voi
     {
       title: 'Put File (bucket)',
       description:
-        'Upload a binary file (base64) to the object-storage bucket and get back a shareable presigned URL + a ready-to-paste markdown link. Use this for images, PDFs, and other binaries instead of committing them to the vault.',
+        'Upload a binary file (base64, optionally a data: URI) to the object-storage bucket and get back a shareable presigned URL + a ready-to-paste markdown link. Use this for images, PDFs, and other binaries instead of committing them to the vault.',
       inputSchema: {
-        path: z
-          .string()
-          .describe('Destination key in the bucket, e.g. "01-raw/images/photo.png"'),
+        path: z.string().describe('Destination key in the bucket, e.g. "01-raw/images/photo.png"'),
         content: z.string().describe('File bytes, base64-encoded (max 10 MB)'),
         mime_type: z
           .string()
           .optional()
-          .describe('MIME type; inferred from the extension when omitted'),
+          .describe('MIME type; inferred from the extension when omitted or invalid'),
       },
       annotations: {
         readOnlyHint: false,
@@ -139,8 +185,10 @@ export function registerStorageTools(server: McpServer, store: BucketStore): voi
         path: z.string().describe('Key of the file in the bucket'),
         expires_in: z
           .number()
+          .int()
+          .positive()
           .optional()
-          .describe('Presigned URL lifetime in seconds (default and max 604800 = 7 days)'),
+          .describe('Presigned URL lifetime in seconds (default 3600, max 604800 = 7 days)'),
       },
       annotations: {
         readOnlyHint: true,
