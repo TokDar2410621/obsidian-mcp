@@ -109,6 +109,11 @@ export function createBucketStore(): BucketStore | null {
     endpoint,
     credentials: { accessKeyId, secretAccessKey },
     forcePathStyle,
+    // Newer SDKs bake a CRC32 checksum into requests by default. On a presigned
+    // PUT that signs a placeholder empty-body checksum, which a strict S3
+    // provider rejects when the real (non-empty) bytes are uploaded. WHEN_REQUIRED
+    // keeps presigned upload URLs clean and portable.
+    requestChecksumCalculation: 'WHEN_REQUIRED',
   });
 
   logger.info('Creating bucket store', { endpoint, bucket, region, forcePathStyle });
