@@ -51,24 +51,25 @@ export class SettingsBackedCompleter implements LlmCompleter {
 
 function build(id: LlmProviderId): ChatProvider | null {
   if (id === 'anthropic') {
-    const key = process.env.ANTHROPIC_API_KEY;
+    const key = process.env.ANTHROPIC_API_KEY?.trim();
     return key ? new AnthropicProvider(key) : null;
   }
   if (id === 'openai') {
-    const key = process.env.OPENAI_API_KEY;
+    const key = process.env.OPENAI_API_KEY?.trim();
     return key ? new OpenAiProvider(OPENAI_BASE_URL, key) : null;
   }
   // 'hf' (or any OpenAI-compatible endpoint behind LLM_BASE_URL).
-  const baseUrl = process.env.LLM_BASE_URL;
-  const key = process.env.LLM_API_KEY;
+  const baseUrl = process.env.LLM_BASE_URL?.trim();
+  const key = process.env.LLM_API_KEY?.trim();
   return baseUrl && key ? new OpenAiProvider(baseUrl, key) : null;
 }
 
 /** True when at least one chat backend is configured (the boot gate). */
 export function hasChatProvider(): boolean {
-  return Boolean(
-    (process.env.LLM_BASE_URL && process.env.LLM_API_KEY) ||
-      process.env.ANTHROPIC_API_KEY ||
-      process.env.OPENAI_API_KEY,
+  const has = (v?: string): boolean => Boolean(v && v.trim());
+  return (
+    (has(process.env.LLM_BASE_URL) && has(process.env.LLM_API_KEY)) ||
+    has(process.env.ANTHROPIC_API_KEY) ||
+    has(process.env.OPENAI_API_KEY)
   );
 }

@@ -193,9 +193,16 @@ export class KnowledgeGraph {
       .sort((a, b) => b.degree - a.degree)
       .slice(0, limit);
     const keys = new Set(top.map(t => t.k));
+    // Canonicalize edge endpoints to the node display name so every link
+    // source/target equals an existing node id (no dangling links for the viz).
+    const links = this.edgesWithin(keys).map(e => ({
+      ...e,
+      source: this.nodeName(key(e.source)),
+      target: this.nodeName(key(e.target)),
+    }));
     return {
       nodes: top.map(t => ({ id: t.name, degree: t.degree, notes: t.notes })),
-      links: this.edgesWithin(keys),
+      links,
     };
   }
 }

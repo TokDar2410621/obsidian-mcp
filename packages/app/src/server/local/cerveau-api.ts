@@ -1,9 +1,11 @@
+import crypto from 'crypto';
 import type { Express, Request, Response, NextFunction } from 'express';
 import type { RagService } from '@/services/rag/rag-service';
 import type { SynapsesService } from '@/services/synapses';
 import type { GraphService } from '@/services/graph';
 import type { SettingsStore } from '@/services/settings/settings-store';
 import type { ToolResponse } from '@/mcp/handlers/types';
+import { logger } from '@/utils/logger';
 
 export interface CerveauApiDeps {
   rag: RagService;
@@ -20,18 +22,24 @@ export interface CerveauApiDeps {
  */
 export function registerCerveauApi(app: Express, deps: CerveauApiDeps, token: string): void {
   const { rag, synapses, graph, settings } = deps;
-  const corsOrigin = process.env.CERVEAU_CORS_ORIGIN || '*';
+  // Only reflect an explicitly-configured origin (never '*'). The documented
+  // client is server-side (Next.js), which needs no CORS at all.
+  const corsOrigin = process.env.CERVEAU_CORS_ORIGIN?.trim();
+  const expectedAuth = Buffer.from(`Bearer ${token}`);
 
   app.use('/api', (req: Request, res: Response, next: NextFunction) => {
-    res.setHeader('Access-Control-Allow-Origin', corsOrigin);
-    res.setHeader('Vary', 'Origin');
-    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
+    const origin = req.headers.origin;
+    if (corsOrigin && origin === corsOrigin) {
+      res.setHeader('Access-Control-Allow-Origin', corsOrigin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
+    }
     if (req.method === 'OPTIONS') {
       res.status(204).end();
       return;
     }
-    if ((req.headers.authorization ?? '') !== `Bearer ${token}`) {
+    if (!authorized(req.headers.authorization, expectedAuth)) {
       res.status(401).json({ error: 'Unauthorized' });
       return;
     }
@@ -120,13 +128,24 @@ export function registerCerveauApi(app: Express, deps: CerveauApiDeps, token: st
       }
       res.json({ notes, chunks: chunks.length, entities, relations, canGenerate: rag.canGenerate });
     } catch (error: any) {
-      res.status(500).json({ error: error?.message ?? String(error) });
+      logger.error('cerveau-api /stats failed', { err: String(error?.message ?? error) });
+      res.status(500).json({ error: 'Internal error' });
     }
   });
 
   // --- settings --------------------------------------------------------------
   app.get('/api/settings', (_req: Request, res: Response) => res.json(settings.get()));
-  app.put('/api/settings', (req: Request, res: Response) => res.json(settings.update(req.body)));
+  app.put('/api/settings', (req: Request, res: Response) => {
+    const { settings: updated, persisted } = settings.update(req.body);
+    if (!persisted) {
+      res.status(503).json({
+        error: 'Settings applied in memory but could not be saved (storage unavailable).',
+        settings: updated,
+      });
+      return;
+    }
+    res.json(updated);
+  });
 
   app.get('/api/health', (_req: Request, res: Response) => res.json({ ok: true }));
 }
@@ -146,9 +165,20 @@ async function run(res: Response, fn: () => Promise<ToolResponse>): Promise<void
     if (r.success) res.json(r.data);
     else res.status(500).json({ error: r.error });
   } catch (error: any) {
-    const status = error instanceof HttpError ? error.status : 500;
-    res.status(status).json({ error: error?.message ?? String(error) });
+    if (error instanceof HttpError) {
+      res.status(error.status).json({ error: error.message });
+      return;
+    }
+    // Don't leak internal paths/stacks to the client; log server-side.
+    logger.error('cerveau-api request failed', { err: String(error?.message ?? error) });
+    res.status(500).json({ error: 'Internal error' });
   }
+}
+
+/** Constant-time bearer-token check (avoids a timing oracle on the sole secret). */
+function authorized(header: string | string[] | undefined, expected: Buffer): boolean {
+  const got = Buffer.from(Array.isArray(header) ? '' : (header ?? ''));
+  return got.length === expected.length && crypto.timingSafeEqual(got, expected);
 }
 
 function numOr(v: unknown, fallback: number | undefined): number | undefined {

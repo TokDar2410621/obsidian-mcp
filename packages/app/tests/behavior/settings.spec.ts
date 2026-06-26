@@ -46,7 +46,7 @@ describe('SettingsStore', () => {
   it('ignores malformed fields and clamps topK', () => {
     const store = new SettingsStore(file);
     const base = store.get();
-    const out = store.update({
+    const { settings: out } = store.update({
       llm: { provider: 'bogus', model: 123 },
       retrieval: { topK: 999, rerank: 'yes' },
       filters: { folder: '  05-projects  ', tags: ['a', 2, ''] },
@@ -57,6 +57,41 @@ describe('SettingsStore', () => {
     expect(out.retrieval.rerank).toBe(base.retrieval.rerank); // non-boolean → base
     expect(out.filters.folder).toBe('05-projects'); // trimmed
     expect(out.filters.tags).toEqual(['a', '2']); // stringified, empties dropped
+  });
+
+  it('caps long strings and tag arrays', () => {
+    const { settings } = new SettingsStore(file).update({
+      llm: { provider: 'hf', model: 'x'.repeat(500) },
+      filters: { folder: 'y'.repeat(500), tags: Array.from({ length: 100 }, (_, i) => `t${i}`) },
+    });
+    expect(settings.llm.model.length).toBe(200);
+    expect(settings.filters.folder.length).toBe(200);
+    expect(settings.filters.tags.length).toBe(50);
+  });
+
+  it('is not vulnerable to prototype pollution via a patch', () => {
+    new SettingsStore(file).update(
+      JSON.parse('{"__proto__":{"polluted":1},"constructor":{"prototype":{"x":1}}}'),
+    );
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(({} as Record<string, unknown>).x).toBeUndefined();
+  });
+
+  it('defaults the model per provider (no hf slug for anthropic)', () => {
+    const ENV = ['LLM_MODEL', 'RAG_GENERATION_MODEL', 'LLM_BASE_URL', 'LLM_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY'];
+    const snapshot = Object.fromEntries(ENV.map(k => [k, process.env[k]]));
+    try {
+      ENV.forEach(k => delete process.env[k]);
+      process.env.ANTHROPIC_API_KEY = 'sk-ant';
+      const s = new SettingsStore(file).get();
+      expect(s.llm.provider).toBe('anthropic');
+      expect(s.llm.model).toBe('claude-opus-4-8');
+    } finally {
+      ENV.forEach(k => {
+        if (snapshot[k] === undefined) delete process.env[k];
+        else process.env[k] = snapshot[k] as string;
+      });
+    }
   });
 });
 

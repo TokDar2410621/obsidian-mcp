@@ -89,6 +89,24 @@ describe('GraphRAG — knowledge graph structure', () => {
     expect(comms[0].size).toBe(3);
     expect(g.topEntities(1)[0].name).toBe('Redis'); // highest degree
   });
+
+  it('graphData canonicalizes link endpoints (no dangling links)', () => {
+    const g = new KnowledgeGraph();
+    g.addNote('a.md', { entities: ['OpenAI'], relations: [] }); // freezes display name "OpenAI"
+    g.addNote('b.md', {
+      entities: ['SendMeNow'],
+      relations: [{ source: 'openai', relation: 'powers', target: 'sendmenow' }], // raw lowercase
+    });
+
+    const { nodes, links } = g.graphData(50);
+    const ids = new Set(nodes.map(n => n.id));
+    expect(ids.has('OpenAI')).toBe(true);
+    expect(links.length).toBeGreaterThan(0);
+    for (const l of links) {
+      expect(ids.has(l.source)).toBe(true); // every endpoint exists as a node
+      expect(ids.has(l.target)).toBe(true);
+    }
+  });
 });
 
 describe('GraphRAG — service', () => {

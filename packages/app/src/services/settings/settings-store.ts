@@ -5,6 +5,16 @@ import { logger } from '@/utils/logger';
 export type LlmProviderId = 'hf' | 'openai' | 'anthropic';
 const PROVIDERS: readonly LlmProviderId[] = ['hf', 'openai', 'anthropic'];
 
+/** Default model per provider — used only when no model env var is set. */
+const DEFAULT_MODELS: Record<LlmProviderId, string> = {
+  hf: 'openai/gpt-oss-120b',
+  openai: 'gpt-4o-mini',
+  anthropic: 'claude-opus-4-8',
+};
+
+const MAX_STR = 200;
+const MAX_TAGS = 50;
+
 /** Runtime-tunable settings for the cerveau, editable from the web Settings page. */
 export interface CerveauSettings {
   llm: { provider: LlmProviderId; model: string };
@@ -25,7 +35,7 @@ export function envDefaultSettings(): CerveauSettings {
           ? 'openai'
           : 'hf';
   const model =
-    process.env.LLM_MODEL || process.env.RAG_GENERATION_MODEL || 'openai/gpt-oss-120b';
+    process.env.LLM_MODEL || process.env.RAG_GENERATION_MODEL || DEFAULT_MODELS[provider];
   return {
     llm: { provider, model },
     retrieval: {
@@ -52,12 +62,16 @@ export class SettingsStore {
     return this.cache;
   }
 
-  /** Merge a (partial, untrusted) patch, persist, and return the new settings. */
-  update(patch: unknown): CerveauSettings {
+  /**
+   * Merge a (partial, untrusted) patch into the settings. The in-memory cache
+   * is updated regardless; `persisted` reports whether the write to disk
+   * succeeded (false ⇒ applied for this process but lost on restart).
+   */
+  update(patch: unknown): { settings: CerveauSettings; persisted: boolean } {
     const next = sanitize(patch, this.get());
     this.cache = next;
-    this.save(next);
-    return next;
+    const persisted = this.save(next);
+    return { settings: next, persisted };
   }
 
   private load(): CerveauSettings {
@@ -73,12 +87,14 @@ export class SettingsStore {
     return defaults;
   }
 
-  private save(s: CerveauSettings): void {
+  private save(s: CerveauSettings): boolean {
     try {
       fs.mkdirSync(path.dirname(this.file), { recursive: true });
       fs.writeFileSync(this.file, JSON.stringify(s, null, 2));
+      return true;
     } catch (err) {
       logger.error('Failed to write cerveau settings', { err: String(err) });
+      return false;
     }
   }
 }
@@ -109,7 +125,9 @@ function sanitize(patch: unknown, base: CerveauSettings): CerveauSettings {
 
   const provider = PROVIDERS.includes(llm.provider) ? (llm.provider as LlmProviderId) : base.llm.provider;
   const model =
-    typeof llm.model === 'string' && llm.model.trim() ? llm.model.trim() : base.llm.model;
+    typeof llm.model === 'string' && llm.model.trim()
+      ? llm.model.trim().slice(0, MAX_STR)
+      : base.llm.model;
 
   return {
     llm: { provider, model },
@@ -119,9 +137,10 @@ function sanitize(patch: unknown, base: CerveauSettings): CerveauSettings {
       hybrid: typeof retrieval.hybrid === 'boolean' ? retrieval.hybrid : base.retrieval.hybrid,
     },
     filters: {
-      folder: typeof filters.folder === 'string' ? filters.folder.trim() : base.filters.folder,
+      folder:
+        typeof filters.folder === 'string' ? filters.folder.trim().slice(0, MAX_STR) : base.filters.folder,
       tags: Array.isArray(filters.tags)
-        ? filters.tags.map((t: unknown) => String(t).trim()).filter(Boolean)
+        ? filters.tags.map((t: unknown) => String(t).trim()).filter(Boolean).slice(0, MAX_TAGS)
         : base.filters.tags,
     },
   };
