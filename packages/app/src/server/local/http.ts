@@ -37,6 +37,7 @@ import { registerLearningTools } from '@/mcp/learning-tool-registrations';
 import { scheduleWeeklyMaintenance } from '@/services/learning/maintenance-cron';
 import { createBucketStore } from '@/services/storage/bucket-store';
 import { registerStorageTools } from '@/mcp/storage-tool-registrations';
+import { registerUploadRoutes } from '@/server/local/upload-page';
 
 loadEnv();
 
@@ -135,6 +136,14 @@ const app = express();
 // Capture the raw body so the GitHub webhook can verify its HMAC signature.
 app.use(express.json({ verify: (req, _res, buf) => ((req as any).rawBody = buf) }));
 app.use(express.urlencoded({ extended: true }));
+
+// Optional drag-and-drop upload page (browser → server → bucket). Off unless
+// UPLOAD_TOKEN and a bucket are configured. The token gates GET /upload and the
+// POST /upload/file endpoint.
+const UPLOAD_TOKEN = process.env.UPLOAD_TOKEN;
+if (bucketStore && UPLOAD_TOKEN) {
+  registerUploadRoutes(app, bucketStore, UPLOAD_TOKEN);
+}
 
 registerOAuthRoutes(app, {
   clientId: OAUTH_CLIENT_ID,

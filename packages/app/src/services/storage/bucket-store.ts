@@ -10,6 +10,10 @@ import { logger } from '@/utils/logger';
 export interface BucketStore {
   put(key: string, body: Buffer, contentType: string): Promise<void>;
   presignGet(key: string, expiresInSeconds: number): Promise<string>;
+  /** Presigned PUT URL: the client uploads bytes directly to the bucket (no
+   *  bytes through the server/model). The PUT request sets the object's
+   *  Content-Type via its own header. */
+  presignPut(key: string, expiresInSeconds: number): Promise<string>;
 }
 
 /**
@@ -50,6 +54,14 @@ export class S3BucketStore implements BucketStore {
 
   async presignGet(key: string, expiresInSeconds: number): Promise<string> {
     return getSignedUrl(this.client, new GetObjectCommand({ Bucket: this.bucket, Key: key }), {
+      expiresIn: expiresInSeconds,
+    });
+  }
+
+  async presignPut(key: string, expiresInSeconds: number): Promise<string> {
+    // Bare PutObjectCommand so any client can upload with a simple PUT; the
+    // object's Content-Type comes from the upload request's own header.
+    return getSignedUrl(this.client, new PutObjectCommand({ Bucket: this.bucket, Key: key }), {
       expiresIn: expiresInSeconds,
     });
   }
