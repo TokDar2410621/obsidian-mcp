@@ -9,6 +9,7 @@ import type { ChatProvider } from '@/services/llm/types';
 export class OpenAiProvider implements ChatProvider {
   private readonly endpoint: string;
   private readonly timeoutMs: number;
+  private readonly maxRetries: number;
 
   constructor(
     baseUrl: string,
@@ -16,49 +17,79 @@ export class OpenAiProvider implements ChatProvider {
   ) {
     this.endpoint = `${baseUrl.trim().replace(/\/+$/, '')}/chat/completions`;
     this.timeoutMs = Number(process.env.LLM_TIMEOUT_MS) || 60000;
+    this.maxRetries = Number(process.env.LLM_MAX_RETRIES) || 3;
   }
 
   async chat(model: string, system: string, user: string, maxTokens: number): Promise<string> {
-    let res: Response;
-    try {
-      res = await fetch(this.endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.apiKey}`,
-        },
-        body: JSON.stringify({
-          model,
-          max_tokens: maxTokens,
-          messages: [
-            { role: 'system', content: system },
-            { role: 'user', content: user },
-          ],
-        }),
-        // Bound the call so a stalled/cold provider can't wedge ask-cerveau, the
-        // graph build, or the digest cron forever (the Anthropic SDK timed out for us).
-        signal: AbortSignal.timeout(this.timeoutMs),
-      });
-    } catch (err: any) {
-      throw new Error(`LLM provider request failed: ${err?.message ?? String(err)}`);
+    const body = JSON.stringify({
+      model,
+      max_tokens: maxTokens,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+    });
+
+    // Retry transient failures (429 queue/rate limits — common on the HF router
+    // under load — plus 5xx and network/timeout). Critical for the graph build,
+    // which fires hundreds of calls back-to-back and saves all-or-nothing.
+    for (let attempt = 0; ; attempt++) {
+      let res: Response;
+      try {
+        res = await fetch(this.endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${this.apiKey}`,
+          },
+          body,
+          // Bound each attempt so a stalled/cold provider can't wedge ask-cerveau,
+          // the graph build, or the digest cron forever.
+          signal: AbortSignal.timeout(this.timeoutMs),
+        });
+      } catch (err: any) {
+        if (attempt < this.maxRetries) {
+          await sleep(backoffMs(attempt));
+          continue;
+        }
+        throw new Error(`LLM provider request failed: ${err?.message ?? String(err)}`);
+      }
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        if ((res.status === 429 || res.status >= 500) && attempt < this.maxRetries) {
+          await sleep(backoffMs(attempt, res.headers?.get?.('retry-after')));
+          continue;
+        }
+        throw new Error(`LLM provider HTTP ${res.status}: ${text.slice(0, 300)}`);
+      }
+
+      // Some gateways return 200 with a non-JSON body (HTML error page, streamed
+      // chunk) or a top-level { error } envelope — surface those as real errors.
+      const data = (await res.json().catch(() => null)) as {
+        error?: unknown;
+        choices?: Array<{ message?: { content?: unknown } }>;
+      } | null;
+      if (data == null) throw new Error('LLM provider returned a non-JSON body');
+      if (data.error) throw new Error(`LLM provider error: ${JSON.stringify(data.error).slice(0, 300)}`);
+
+      return cleanContent(data.choices?.[0]?.message?.content);
     }
-
-    if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      throw new Error(`LLM provider HTTP ${res.status}: ${body.slice(0, 300)}`);
-    }
-
-    // Some gateways return 200 with a non-JSON body (HTML error page, streamed
-    // chunk) or a top-level { error } envelope — surface those as real errors.
-    const data = (await res.json().catch(() => null)) as {
-      error?: unknown;
-      choices?: Array<{ message?: { content?: unknown } }>;
-    } | null;
-    if (data == null) throw new Error('LLM provider returned a non-JSON body');
-    if (data.error) throw new Error(`LLM provider error: ${JSON.stringify(data.error).slice(0, 300)}`);
-
-    return cleanContent(data.choices?.[0]?.message?.content);
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/** Exponential backoff with jitter; honors a `Retry-After` header (seconds) when present. */
+function backoffMs(attempt: number, retryAfter?: string | null): number {
+  if (retryAfter) {
+    const secs = Number(retryAfter);
+    if (Number.isFinite(secs) && secs >= 0) return Math.min(secs * 1000, 15000);
+  }
+  const base = Number(process.env.LLM_RETRY_BASE_MS ?? 500);
+  return Math.min(base * 2 ** attempt, 8000) + Math.floor(Math.random() * 250);
 }
 
 /** Coerce `message.content` to text — tolerates the array-of-parts shape some routers return. */

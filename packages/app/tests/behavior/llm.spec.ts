@@ -7,7 +7,11 @@ beforeAll(() => {
 });
 
 describe('OpenAiProvider (OpenAI-compatible chat)', () => {
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env.LLM_RETRY_BASE_MS;
+    delete process.env.LLM_MAX_RETRIES;
+  });
 
   it('POSTs to {baseURL}/chat/completions with system+user and returns trimmed content', async () => {
     let captured: any;
@@ -30,10 +34,43 @@ describe('OpenAiProvider (OpenAI-compatible chat)', () => {
     ]);
   });
 
-  it('throws with the status on a non-ok response', async () => {
-    vi.stubGlobal('fetch', async () => ({ ok: false, status: 429, text: async () => 'rate limited' }));
+  it('throws immediately on a non-retryable 4xx (no retry)', async () => {
+    let calls = 0;
+    vi.stubGlobal('fetch', async () => {
+      calls++;
+      return { ok: false, status: 400, text: async () => 'bad model' };
+    });
+    const p = new OpenAiProvider('https://x/v1', 'k');
+    await expect(p.chat('m', 's', 'u', 10)).rejects.toThrow(/400/);
+    expect(calls).toBe(1);
+  });
+
+  it('retries a transient 429 then succeeds', async () => {
+    process.env.LLM_RETRY_BASE_MS = '0';
+    let calls = 0;
+    vi.stubGlobal('fetch', async () => {
+      calls++;
+      if (calls === 1) {
+        return { ok: false, status: 429, headers: { get: () => null }, text: async () => 'queue full' };
+      }
+      return { ok: true, json: async () => ({ choices: [{ message: { content: 'recovered' } }] }) };
+    });
+    const p = new OpenAiProvider('https://x/v1', 'k');
+    expect(await p.chat('m', 's', 'u', 10)).toBe('recovered');
+    expect(calls).toBe(2);
+  });
+
+  it('gives up after exhausting retries on a persistent 429', async () => {
+    process.env.LLM_RETRY_BASE_MS = '0';
+    process.env.LLM_MAX_RETRIES = '2';
+    let calls = 0;
+    vi.stubGlobal('fetch', async () => {
+      calls++;
+      return { ok: false, status: 429, headers: { get: () => null }, text: async () => 'queue full' };
+    });
     const p = new OpenAiProvider('https://x/v1', 'k');
     await expect(p.chat('m', 's', 'u', 10)).rejects.toThrow(/429/);
+    expect(calls).toBe(3); // 1 initial + 2 retries
   });
 
   it('returns "" when the response carries no content', async () => {
