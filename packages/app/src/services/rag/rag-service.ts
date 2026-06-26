@@ -220,7 +220,9 @@ export class RagService {
   async askCerveau(args: AskArgs): Promise<ToolResponse> {
     try {
       if (!this.generator) {
-        return fail('ask-cerveau requires ANTHROPIC_API_KEY to be configured on the server.');
+        return fail(
+          'ask-cerveau requires an LLM provider: set LLM_BASE_URL + LLM_API_KEY (any OpenAI-compatible endpoint, e.g. Hugging Face) or ANTHROPIC_API_KEY.',
+        );
       }
       await this.ensureReady();
 
@@ -236,7 +238,7 @@ export class RagService {
       const { contexts, used } = this.budgetContexts(hits);
       const result = await this.generator.generate(await this.withLearnings(args.question), contexts);
       if (result.refused) {
-        return fail('La génération a été refusée par le modèle (stop_reason: refusal).');
+        return fail("La génération n'a produit aucune réponse exploitable.");
       }
 
       return ok({

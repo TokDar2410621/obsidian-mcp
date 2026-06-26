@@ -1,5 +1,5 @@
-import Anthropic from '@anthropic-ai/sdk';
 import type { AnswerGenerator, GenContext, GenResult } from '@/services/rag/types';
+import type { ChatProvider } from '@/services/llm';
 
 const SYSTEM_PROMPT = [
   "Tu es l'assistant du « deuxième cerveau » de Darius : un coffre de notes Markdown (projets, savoir, daily, personnes).",
@@ -11,17 +11,13 @@ const SYSTEM_PROMPT = [
   '- Sois concis et factuel. Ne paraphrase pas tout le contexte ; synthétise et pointe vers les notes.',
 ].join('\n');
 
-/** Generates grounded answers with Claude via the official Anthropic SDK. */
-export class AnthropicAnswerGenerator implements AnswerGenerator {
-  private readonly client: Anthropic;
-
+/** Generates grounded answers via the configured {@link ChatProvider}. */
+export class RagAnswerGenerator implements AnswerGenerator {
   constructor(
-    apiKey: string,
+    private readonly provider: ChatProvider,
     public readonly model = 'claude-opus-4-8',
     private readonly maxTokens = 2048,
-  ) {
-    this.client = new Anthropic({ apiKey });
-  }
+  ) {}
 
   async generate(question: string, contexts: GenContext[]): Promise<GenResult> {
     const contextBlock = contexts
@@ -33,23 +29,7 @@ export class AnthropicAnswerGenerator implements AnswerGenerator {
 
     const userMessage = `Extraits de notes :\n\n${contextBlock}\n\n---\n\nQuestion : ${question}`;
 
-    const response = await this.client.messages.create({
-      model: this.model,
-      max_tokens: this.maxTokens,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: userMessage }],
-    });
-
-    if (response.stop_reason === 'refusal') {
-      return { answer: '', refused: true };
-    }
-
-    const answer = response.content
-      .filter((block): block is Anthropic.TextBlock => block.type === 'text')
-      .map(block => block.text)
-      .join('')
-      .trim();
-
-    return { answer, refused: false };
+    const answer = await this.provider.chat(this.model, SYSTEM_PROMPT, userMessage, this.maxTokens);
+    return { answer, refused: answer === '' };
   }
 }

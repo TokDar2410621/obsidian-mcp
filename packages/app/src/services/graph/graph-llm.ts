@@ -1,5 +1,5 @@
-import Anthropic from '@anthropic-ai/sdk';
 import type { GraphExtraction, GraphLlm, Relation } from '@/services/graph/types';
+import type { ChatProvider } from '@/services/llm';
 
 const EXTRACT_SYSTEM = [
   'Tu extrais un graphe de connaissances depuis une note Markdown (projets, savoir, personnes).',
@@ -14,47 +14,32 @@ const SYNTHESIZE_SYSTEM = [
   "Cite les notes sources en wikilinks [[nom]]. Si le graphe ne contient pas l'info, dis-le clairement.",
 ].join('\n');
 
-/** GraphLlm via Claude: cheap/fast Haiku for per-note extraction, the generation model for synthesis. */
-export class AnthropicGraphLlm implements GraphLlm {
-  private readonly client: Anthropic;
-
+/** GraphLlm via the configured provider: a fast model for per-note extraction, the generation model for synthesis. */
+export class LlmGraph implements GraphLlm {
   constructor(
-    apiKey: string,
+    private readonly provider: ChatProvider,
     private readonly extractModel = 'claude-haiku-4-5',
     private readonly synthModel = 'claude-opus-4-8',
-  ) {
-    this.client = new Anthropic({ apiKey });
-  }
+  ) {}
 
   async extract(noteText: string): Promise<GraphExtraction> {
-    const res = await this.client.messages.create({
-      model: this.extractModel,
-      max_tokens: 1024,
-      system: EXTRACT_SYSTEM,
-      messages: [{ role: 'user', content: noteText.slice(0, 6000) }],
-    });
-    if (res.stop_reason === 'refusal') return { entities: [], relations: [] };
-    return parseExtraction(textOf(res));
+    const text = await this.provider.chat(
+      this.extractModel,
+      EXTRACT_SYSTEM,
+      noteText.slice(0, 6000),
+      1024,
+    );
+    return parseExtraction(text);
   }
 
   async synthesize(question: string, context: string): Promise<string> {
-    const res = await this.client.messages.create({
-      model: this.synthModel,
-      max_tokens: 1500,
-      system: SYNTHESIZE_SYSTEM,
-      messages: [{ role: 'user', content: `Graphe :\n${context}\n\nQuestion : ${question}` }],
-    });
-    if (res.stop_reason === 'refusal') return '';
-    return textOf(res);
+    return this.provider.chat(
+      this.synthModel,
+      SYNTHESIZE_SYSTEM,
+      `Graphe :\n${context}\n\nQuestion : ${question}`,
+      1500,
+    );
   }
-}
-
-function textOf(res: Anthropic.Message): string {
-  return res.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map(b => b.text)
-    .join('')
-    .trim();
 }
 
 export function parseExtraction(text: string): GraphExtraction {

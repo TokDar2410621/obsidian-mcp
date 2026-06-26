@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk';
+import type { ChatProvider } from '@/services/llm';
 
 export interface RerankCandidate {
   id: string;
@@ -18,20 +18,15 @@ const SYSTEM = [
 ].join('\n');
 
 /**
- * LLM reranker via Claude (default Haiku — reranking is a light task, so a cheap
- * fast model keeps added latency/cost low). Reuses ANTHROPIC_API_KEY; no extra
- * provider or key. Any failure falls back to the input order, so rerank is safe.
+ * LLM reranker over the fused shortlist (default a cheap/fast model — reranking
+ * is a light task). Any failure falls back to the input order, so rerank is safe.
  */
-export class AnthropicReranker implements Reranker {
-  private readonly client: Anthropic;
-
+export class LlmReranker implements Reranker {
   constructor(
-    apiKey: string,
+    private readonly provider: ChatProvider,
     public readonly model = 'claude-haiku-4-5',
     private readonly maxTokens = 512,
-  ) {
-    this.client = new Anthropic({ apiKey });
-  }
+  ) {}
 
   async rerank(query: string, candidates: RerankCandidate[]): Promise<string[]> {
     const fallback = candidates.map(c => c.id);
@@ -39,18 +34,13 @@ export class AnthropicReranker implements Reranker {
       .map(c => `[${c.id}] ${c.text.replace(/\s+/g, ' ').slice(0, 300)}`)
       .join('\n');
 
-    const response = await this.client.messages.create({
-      model: this.model,
-      max_tokens: this.maxTokens,
-      system: SYSTEM,
-      messages: [{ role: 'user', content: `Requête : ${query}\n\nExtraits :\n${list}` }],
-    });
-    if (response.stop_reason === 'refusal') return fallback;
+    let text: string;
+    try {
+      text = await this.provider.chat(this.model, SYSTEM, `Requête : ${query}\n\nExtraits :\n${list}`, this.maxTokens);
+    } catch {
+      return fallback; // rerank is best-effort — never break retrieval
+    }
 
-    const text = response.content
-      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-      .map(b => b.text)
-      .join('');
     const start = text.indexOf('[');
     const end = text.lastIndexOf(']');
     if (start === -1 || end === -1 || end < start) return fallback;
