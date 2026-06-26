@@ -168,6 +168,22 @@ export async function handleGetUploadUrl(
   }
 }
 
+export async function handleDeleteFile(
+  store: BucketStore,
+  args: { path: string; confirm?: boolean },
+): Promise<ToolResponse> {
+  try {
+    if (args.confirm !== true) {
+      return fail('Refusing to delete: set confirm: true to remove this file.');
+    }
+    const key = normalizeKey(args.path);
+    await store.delete(key);
+    return ok({ deleted: key });
+  } catch (error: any) {
+    return fail(error?.message ?? String(error));
+  }
+}
+
 /**
  * Registers the object-storage tools. Imported ONLY from the http/stdio
  * entrypoints (never the lambda bundle), so the AWS S3 SDK stays out of the
@@ -251,5 +267,24 @@ export function registerStorageTools(server: McpServer, store: BucketStore): voi
       },
     },
     async args => formatToolResult(await handleGetUploadUrl(store, args)),
+  );
+
+  server.registerTool(
+    'delete-file',
+    {
+      title: 'Delete File (bucket)',
+      description: 'Delete a file from the object-storage bucket. Requires confirm: true.',
+      inputSchema: {
+        path: z.string().describe('Key of the file to delete'),
+        confirm: z.boolean().describe('Must be true to confirm deletion'),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async args => formatToolResult(await handleDeleteFile(store, args)),
   );
 }
