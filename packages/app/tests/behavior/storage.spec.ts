@@ -3,6 +3,7 @@ import {
   handlePutFile,
   handleGetFile,
   handleGetUploadUrl,
+  handleDeleteFile,
 } from '@/mcp/storage-tool-registrations';
 import type { BucketStore } from '@/services/storage/bucket-store';
 
@@ -17,6 +18,9 @@ class FakeBucket implements BucketStore {
   }
   async presignPut(key: string, expiresIn: number): Promise<string> {
     return `https://bucket.test/${key}?put&exp=${expiresIn}`;
+  }
+  async delete(key: string): Promise<void> {
+    this.objects.delete(key);
   }
 }
 
@@ -133,5 +137,22 @@ describe('Object-storage tools', () => {
   it('get-upload-url rejects path traversal', async () => {
     const res = await handleGetUploadUrl(new FakeBucket(), { path: '../escape.png' });
     expect(res.success).toBe(false);
+  });
+
+  it('delete-file removes the object when confirmed', async () => {
+    const bucket = new FakeBucket();
+    await bucket.put('99-tmp/x.txt', Buffer.from('x'), 'text/plain');
+    const res = await handleDeleteFile(bucket, { path: '99-tmp/x.txt', confirm: true });
+    expect(res.success).toBe(true);
+    expect(res.data!.deleted).toBe('99-tmp/x.txt');
+    expect(bucket.objects.has('99-tmp/x.txt')).toBe(false);
+  });
+
+  it('delete-file refuses without confirm: true', async () => {
+    const bucket = new FakeBucket();
+    await bucket.put('99-tmp/x.txt', Buffer.from('x'), 'text/plain');
+    const res = await handleDeleteFile(bucket, { path: '99-tmp/x.txt' });
+    expect(res.success).toBe(false);
+    expect(bucket.objects.has('99-tmp/x.txt')).toBe(true);
   });
 });

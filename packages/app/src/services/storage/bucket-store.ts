@@ -1,4 +1,9 @@
-import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+  DeleteObjectCommand,
+} from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { logger } from '@/utils/logger';
 
@@ -14,6 +19,8 @@ export interface BucketStore {
    *  bytes through the server/model). The PUT request sets the object's
    *  Content-Type via its own header. */
   presignPut(key: string, expiresInSeconds: number): Promise<string>;
+  /** Delete an object (idempotent — succeeds even if the key is absent). */
+  delete(key: string): Promise<void>;
 }
 
 /**
@@ -64,6 +71,10 @@ export class S3BucketStore implements BucketStore {
     return getSignedUrl(this.client, new PutObjectCommand({ Bucket: this.bucket, Key: key }), {
       expiresIn: expiresInSeconds,
     });
+  }
+
+  async delete(key: string): Promise<void> {
+    await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
   }
 }
 
