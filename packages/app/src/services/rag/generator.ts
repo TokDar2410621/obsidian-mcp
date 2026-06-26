@@ -1,5 +1,5 @@
 import type { AnswerGenerator, GenContext, GenResult } from '@/services/rag/types';
-import type { ChatProvider } from '@/services/llm';
+import type { LlmCompleter } from '@/services/synapses/types';
 
 const SYSTEM_PROMPT = [
   "Tu es l'assistant du « deuxième cerveau » de Darius : un coffre de notes Markdown (projets, savoir, daily, personnes).",
@@ -11,11 +11,13 @@ const SYSTEM_PROMPT = [
   '- Sois concis et factuel. Ne paraphrase pas tout le contexte ; synthétise et pointe vers les notes.',
 ].join('\n');
 
-/** Generates grounded answers via the configured {@link ChatProvider}. */
+/** Generates grounded answers via the runtime-selected LLM ({@link LlmCompleter}). */
 export class RagAnswerGenerator implements AnswerGenerator {
+  /** Vestigial label — the actual model is chosen per-call by the completer. */
+  readonly model = 'dynamic';
+
   constructor(
-    private readonly provider: ChatProvider,
-    public readonly model = 'claude-opus-4-8',
+    private readonly llm: LlmCompleter,
     private readonly maxTokens = 2048,
   ) {}
 
@@ -29,7 +31,7 @@ export class RagAnswerGenerator implements AnswerGenerator {
 
     const userMessage = `Extraits de notes :\n\n${contextBlock}\n\n---\n\nQuestion : ${question}`;
 
-    const answer = await this.provider.chat(this.model, SYSTEM_PROMPT, userMessage, this.maxTokens);
+    const answer = await this.llm.complete(SYSTEM_PROMPT, userMessage, this.maxTokens);
     return { answer, refused: answer === '' };
   }
 }

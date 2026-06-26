@@ -1,4 +1,4 @@
-import type { ChatProvider } from '@/services/llm';
+import type { LlmCompleter } from '@/services/synapses/types';
 
 export interface RerankCandidate {
   id: string;
@@ -18,13 +18,12 @@ const SYSTEM = [
 ].join('\n');
 
 /**
- * LLM reranker over the fused shortlist (default a cheap/fast model — reranking
- * is a light task). Any failure falls back to the input order, so rerank is safe.
+ * LLM reranker over the fused shortlist, via the runtime-selected
+ * {@link LlmCompleter}. Any failure falls back to the input order, so rerank is safe.
  */
 export class LlmReranker implements Reranker {
   constructor(
-    private readonly provider: ChatProvider,
-    public readonly model = 'claude-haiku-4-5',
+    private readonly llm: LlmCompleter,
     private readonly maxTokens = 512,
   ) {}
 
@@ -36,7 +35,7 @@ export class LlmReranker implements Reranker {
 
     let text: string;
     try {
-      text = await this.provider.chat(this.model, SYSTEM, `Requête : ${query}\n\nExtraits :\n${list}`, this.maxTokens);
+      text = await this.llm.complete(SYSTEM, `Requête : ${query}\n\nExtraits :\n${list}`, this.maxTokens);
     } catch {
       return fallback; // rerank is best-effort — never break retrieval
     }

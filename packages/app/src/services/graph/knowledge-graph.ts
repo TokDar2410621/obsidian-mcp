@@ -32,6 +32,18 @@ export interface GraphEdgeView {
   notes: string[];
 }
 
+export interface GraphDataNode {
+  /** Entity display name (also the link source/target id). */
+  id: string;
+  degree: number;
+  notes: number;
+}
+
+export interface GraphData {
+  nodes: GraphDataNode[];
+  links: GraphEdgeView[];
+}
+
 /**
  * In-memory knowledge graph: entities (nodes, with the notes that mention them)
  * and relations (edges). Pure data structure — no LLM, no IO.
@@ -172,5 +184,18 @@ export class KnowledgeGraph {
       }))
       .sort((a, b) => b.degree - a.degree)
       .slice(0, limit);
+  }
+
+  /** Nodes + links for a force-graph view: the `limit` most-connected entities and their edges. */
+  graphData(limit = 150): GraphData {
+    const top = [...this.nodes.entries()]
+      .map(([k, n]) => ({ k, name: n.name, degree: this.adjacency.get(k)?.size ?? 0, notes: n.mentions.size }))
+      .sort((a, b) => b.degree - a.degree)
+      .slice(0, limit);
+    const keys = new Set(top.map(t => t.k));
+    return {
+      nodes: top.map(t => ({ id: t.name, degree: t.degree, notes: t.notes })),
+      links: this.edgesWithin(keys),
+    };
   }
 }

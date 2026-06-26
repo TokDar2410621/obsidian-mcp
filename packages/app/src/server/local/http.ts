@@ -38,6 +38,8 @@ import { scheduleWeeklyMaintenance } from '@/services/learning/maintenance-cron'
 import { createBucketStore } from '@/services/storage/bucket-store';
 import { registerStorageTools } from '@/mcp/storage-tool-registrations';
 import { registerUploadRoutes } from '@/server/local/upload-page';
+import { registerCerveauApi } from '@/server/local/cerveau-api';
+import { getSettingsStore } from '@/services/settings/settings-store';
 
 loadEnv();
 
@@ -143,6 +145,17 @@ app.use(express.urlencoded({ extended: true }));
 const UPLOAD_TOKEN = process.env.UPLOAD_TOKEN;
 if (bucketStore && UPLOAD_TOKEN) {
   registerUploadRoutes(app, bucketStore, UPLOAD_TOKEN);
+}
+
+// Token-gated REST API for the private cerveau-web app (Next.js on Vercel).
+// Off unless CERVEAU_API_TOKEN is set. Reuses the live RAG/Synapses/Graph services.
+const CERVEAU_API_TOKEN = process.env.CERVEAU_API_TOKEN;
+if (ragService && CERVEAU_API_TOKEN) {
+  registerCerveauApi(
+    app,
+    { rag: ragService, synapses: synapsesService, graph: graphService, settings: getSettingsStore() },
+    CERVEAU_API_TOKEN,
+  );
 }
 
 registerOAuthRoutes(app, {
