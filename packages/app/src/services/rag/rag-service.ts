@@ -4,6 +4,7 @@ import { chunkNote, toWikilink } from '@/services/rag/chunker';
 import { dot, normalize } from '@/services/rag/cosine';
 import { BM25Index, rrf } from '@/services/rag/bm25';
 import type { Reranker } from '@/services/rag/reranker';
+import type { SettingsStore } from '@/services/settings/settings-store';
 import type {
   AnswerGenerator,
   Chunk,
@@ -36,6 +37,8 @@ export interface RagServiceOptions {
   hybrid?: boolean;
   /** Optional reranker applied to the fused shortlist. Default null (off). */
   reranker?: Reranker | null;
+  /** Runtime settings — when present, retrieve() reads rerank/hybrid live from it. */
+  settings?: SettingsStore | null;
 }
 
 interface SearchArgs {
@@ -86,6 +89,7 @@ export class RagService {
   private readonly persist: boolean;
   private readonly hybrid: boolean;
   private readonly reranker: Reranker | null;
+  private readonly settings: SettingsStore | null;
 
   private chunks: EmbeddedChunk[] = [];
   private bm25: BM25Index | null = null;
@@ -102,6 +106,7 @@ export class RagService {
     this.persist = options.persist ?? true;
     this.hybrid = options.hybrid ?? true;
     this.reranker = options.reranker ?? null;
+    this.settings = options.settings ?? null;
   }
 
   get canGenerate(): boolean {
@@ -119,7 +124,8 @@ export class RagService {
   }
 
   private buildLexicalIndex(): void {
-    this.bm25 = this.hybrid ? new BM25Index(this.chunks.map(c => c.text)) : null;
+    // Always build BM25 so hybrid retrieval can be toggled on/off at runtime.
+    this.bm25 = new BM25Index(this.chunks.map(c => c.text));
   }
 
   /** Ensure the index is available, loading from disk or building on first use. */
@@ -262,6 +268,9 @@ export class RagService {
     filters: { top_k?: number; folder?: string; tags?: string[] },
   ): Promise<SearchHit[]> {
     const topK = clampTopK(filters.top_k);
+    const cfg = this.settings?.get().retrieval;
+    const hybridOn = cfg ? cfg.hybrid : this.hybrid;
+    const rerankOn = cfg ? cfg.rerank : true;
     const [raw] = await this.embedder.embed([query]);
     const queryVec = normalize(raw);
 
@@ -283,7 +292,7 @@ export class RagService {
 
     // Hybrid: blend with BM25 (lexical) via Reciprocal Rank Fusion.
     let ranked = denseRanked;
-    if (this.hybrid && this.bm25) {
+    if (hybridOn && this.bm25) {
       const bm25Score = this.bm25.score(query, candidates);
       if (bm25Score.size > 0) {
         const bm25Ranked = [...bm25Score.keys()].sort(
@@ -294,7 +303,7 @@ export class RagService {
     }
 
     // Optional rerank over the fused shortlist (cross-encoder style).
-    if (this.reranker && ranked.length > 1) {
+    if (this.reranker && rerankOn && ranked.length > 1) {
       const pool = ranked.slice(0, RERANK_POOL);
       try {
         const order = await this.reranker.rerank(

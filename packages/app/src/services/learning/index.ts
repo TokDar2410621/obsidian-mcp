@@ -1,9 +1,9 @@
 import type { VaultManager } from '@/services/vault-manager';
 import type { RagService } from '@/services/rag/rag-service';
-import { ProviderCompleter } from '@/services/synapses/completer';
 import { LearningService } from '@/services/learning/learning-service';
 import { LearningsStore } from '@/services/learning/learnings-store';
-import { createChatProvider, defaultLlmModel } from '@/services/llm';
+import { SettingsBackedCompleter, hasChatProvider } from '@/services/llm/settings-completer';
+import { getSettingsStore } from '@/services/settings/settings-store';
 
 export { LearningService } from '@/services/learning/learning-service';
 export { LearningsStore, LEARNINGS_FILE } from '@/services/learning/learnings-store';
@@ -14,23 +14,14 @@ export interface LearningBundle {
 }
 
 /**
- * Build the learning loops, or `null` when no LLM provider is configured (see
- * {@link createChatProvider}).
- * - `service` — consolidation + gap analyses (LLM).
+ * Build the learning loops, or `null` when no LLM provider is configured.
+ * - `service` — consolidation + gap analyses (LLM, runtime-selected model).
  * - `store`   — the `_learnings.md` feedback memory.
- *
- * `LEARNING_MODEL` overrides `RAG_GENERATION_MODEL` for the analyses.
  */
 export function createLearning(rag: RagService, vault: VaultManager): LearningBundle | null {
-  const provider = createChatProvider();
-  if (!provider) return null;
-
-  const model =
-    process.env.LEARNING_MODEL ||
-    process.env.RAG_GENERATION_MODEL ||
-    defaultLlmModel('claude-opus-4-8');
+  if (!hasChatProvider()) return null;
   return {
-    service: new LearningService({ rag, llm: new ProviderCompleter(provider, model) }),
+    service: new LearningService({ rag, llm: new SettingsBackedCompleter(getSettingsStore()) }),
     store: new LearningsStore(vault),
   };
 }

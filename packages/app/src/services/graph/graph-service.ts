@@ -182,6 +182,18 @@ export class GraphService {
     }
   }
 
+  /** Nodes + links for the web graph visualization (top-N most-connected entities). */
+  async graphData(args: { limit?: number } = {}): Promise<ToolResponse> {
+    try {
+      await this.ensureReady();
+      const limit = Math.max(10, Math.min(300, Math.floor(args.limit ?? 150)));
+      const data = this.graph.graphData(limit);
+      return ok({ nodes: data.nodes, links: data.links });
+    } catch (error: any) {
+      return fail(error?.message ?? String(error));
+    }
+  }
+
   private buildContext(relations: GraphEdgeView[], noteFiles: string[]): string {
     const triples = relations
       .slice(0, MAX_TRIPLES)

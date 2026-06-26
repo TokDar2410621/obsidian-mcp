@@ -1,5 +1,5 @@
 import type { GraphExtraction, GraphLlm, Relation } from '@/services/graph/types';
-import type { ChatProvider } from '@/services/llm';
+import type { LlmCompleter } from '@/services/synapses/types';
 
 const EXTRACT_SYSTEM = [
   'Tu extrais un graphe de connaissances depuis une note Markdown (projets, savoir, personnes).',
@@ -14,27 +14,17 @@ const SYNTHESIZE_SYSTEM = [
   "Cite les notes sources en wikilinks [[nom]]. Si le graphe ne contient pas l'info, dis-le clairement.",
 ].join('\n');
 
-/** GraphLlm via the configured provider: a fast model for per-note extraction, the generation model for synthesis. */
+/** GraphLlm via the runtime-selected {@link LlmCompleter} (extraction + synthesis). */
 export class LlmGraph implements GraphLlm {
-  constructor(
-    private readonly provider: ChatProvider,
-    private readonly extractModel = 'claude-haiku-4-5',
-    private readonly synthModel = 'claude-opus-4-8',
-  ) {}
+  constructor(private readonly llm: LlmCompleter) {}
 
   async extract(noteText: string): Promise<GraphExtraction> {
-    const text = await this.provider.chat(
-      this.extractModel,
-      EXTRACT_SYSTEM,
-      noteText.slice(0, 6000),
-      1024,
-    );
+    const text = await this.llm.complete(EXTRACT_SYSTEM, noteText.slice(0, 6000), 1024);
     return parseExtraction(text);
   }
 
   async synthesize(question: string, context: string): Promise<string> {
-    return this.provider.chat(
-      this.synthModel,
+    return this.llm.complete(
       SYNTHESIZE_SYSTEM,
       `Graphe :\n${context}\n\nQuestion : ${question}`,
       1500,
