@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { handlePutFile, handleGetFile } from '@/mcp/storage-tool-registrations';
+import {
+  handlePutFile,
+  handleGetFile,
+  handleGetUploadUrl,
+} from '@/mcp/storage-tool-registrations';
 import type { BucketStore } from '@/services/storage/bucket-store';
 
 class FakeBucket implements BucketStore {
@@ -10,6 +14,9 @@ class FakeBucket implements BucketStore {
   }
   async presignGet(key: string, expiresIn: number): Promise<string> {
     return `https://bucket.test/${key}?exp=${expiresIn}`;
+  }
+  async presignPut(key: string, expiresIn: number): Promise<string> {
+    return `https://bucket.test/${key}?put&exp=${expiresIn}`;
   }
 }
 
@@ -111,5 +118,20 @@ describe('Object-storage tools', () => {
     );
     expect((await handleGetFile(bucket, { path: 'a', expires_in: NaN })).data!.expires_in).toBe(3600);
     expect((await handleGetFile(bucket, { path: 'a', expires_in: 1.9 })).data!.expires_in).toBe(1);
+  });
+
+  it('get-upload-url returns a presigned PUT URL + content-type hint', async () => {
+    const res = await handleGetUploadUrl(new FakeBucket(), { path: '/01-raw/docs/contrat.pdf' });
+    expect(res.success).toBe(true);
+    expect(res.data!.key).toBe('01-raw/docs/contrat.pdf');
+    expect(res.data!.method).toBe('PUT');
+    expect(res.data!.content_type).toBe('application/pdf');
+    expect(res.data!.url ?? res.data!.upload_url).toBeDefined();
+    expect(res.data!.upload_url).toContain('put');
+  });
+
+  it('get-upload-url rejects path traversal', async () => {
+    const res = await handleGetUploadUrl(new FakeBucket(), { path: '../escape.png' });
+    expect(res.success).toBe(false);
   });
 });

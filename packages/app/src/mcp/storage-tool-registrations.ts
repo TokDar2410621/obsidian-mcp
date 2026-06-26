@@ -7,6 +7,7 @@ import type { BucketStore } from '@/services/storage/bucket-store';
 const MAX_BYTES = 10 * 1024 * 1024; // 10 MB cap on base64 uploads
 const MAX_EXPIRY = 604800; // 7 days — the SigV4 presigned-URL maximum
 const DEFAULT_GET_EXPIRY = 3600; // 1 hour — a presigned URL is a bearer credential
+const DEFAULT_PUT_EXPIRY = 3600; // 1 hour — upload URLs are used immediately
 
 const MIME: Record<string, string> = {
   png: 'image/png',
@@ -144,6 +145,29 @@ export async function handleGetFile(
   }
 }
 
+export async function handleGetUploadUrl(
+  store: BucketStore,
+  args: { path: string; expires_in?: number; content_type?: string },
+): Promise<ToolResponse> {
+  try {
+    const key = normalizeKey(args.path);
+    const expiresIn = clampExpiry(args.expires_in, DEFAULT_PUT_EXPIRY);
+    const uploadUrl = await store.presignPut(key, expiresIn);
+    const contentType =
+      args.content_type && MIME_RE.test(args.content_type) ? args.content_type : inferMime(key);
+    return ok({
+      key,
+      upload_url: uploadUrl,
+      method: 'PUT',
+      content_type: contentType,
+      expires_in: expiresIn,
+      hint: `curl -X PUT --upload-file <file> -H "Content-Type: ${contentType}" "${uploadUrl}"`,
+    });
+  } catch (error: any) {
+    return fail(error?.message ?? String(error));
+  }
+}
+
 /**
  * Registers the object-storage tools. Imported ONLY from the http/stdio
  * entrypoints (never the lambda bundle), so the AWS S3 SDK stays out of the
@@ -198,5 +222,34 @@ export function registerStorageTools(server: McpServer, store: BucketStore): voi
       },
     },
     async args => formatToolResult(await handleGetFile(store, args)),
+  );
+
+  server.registerTool(
+    'get-upload-url',
+    {
+      title: 'Get Upload URL (bucket)',
+      description:
+        'Return a presigned PUT URL so a file can be uploaded straight to the object-storage bucket from a browser, app, or curl — the bytes never pass through the model. Use this when the user wants to put a photo/PDF/file into the cerveau but you cannot access its raw bytes.',
+      inputSchema: {
+        path: z.string().describe('Destination key in the bucket, e.g. "01-raw/docs/contrat.pdf"'),
+        content_type: z
+          .string()
+          .optional()
+          .describe('MIME type hint for the upload (inferred from the extension when omitted)'),
+        expires_in: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe('Upload URL lifetime in seconds (default 3600, max 604800)'),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
+    async args => formatToolResult(await handleGetUploadUrl(store, args)),
   );
 }
