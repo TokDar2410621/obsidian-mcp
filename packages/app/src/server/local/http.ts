@@ -35,6 +35,8 @@ import { registerGraphTools } from '@/mcp/graph-tool-registrations';
 import { createLearning } from '@/services/learning';
 import { registerLearningTools } from '@/mcp/learning-tool-registrations';
 import { scheduleWeeklyMaintenance } from '@/services/learning/maintenance-cron';
+import { createReflectionService } from '@/services/reflection/reflection-service';
+import { scheduleDailyReflection } from '@/services/reflection/reflection-cron';
 import { createBucketStore } from '@/services/storage/bucket-store';
 import { registerStorageTools } from '@/mcp/storage-tool-registrations';
 import { registerUploadRoutes } from '@/server/local/upload-page';
@@ -126,6 +128,14 @@ if (learning && ragService) {
   ragService.setLearningsProvider(() => learning.store.getLearnings());
 }
 
+// Optional autonomous reflection loop (level 3): once a day the cerveau sets its
+// own agenda, reasons over the vault, and self-critiques — propose-only into
+// `08-auto/`. Needs RAG + Synapses + Learning (so an LLM provider).
+const reflection =
+  ragService && synapsesService && learning
+    ? createReflectionService(ragService, synapsesService, learning.service, vaultManager)
+    : null;
+
 // Optional object-storage tools (put-file / get-file) backed by an S3-compatible
 // bucket (e.g. a Railway Bucket). Null unless the bucket env vars are set — keeps
 // binaries (images, PDFs) out of the git vault. Independent of RAG/Anthropic.
@@ -153,7 +163,13 @@ const CERVEAU_API_TOKEN = process.env.CERVEAU_API_TOKEN;
 if (ragService && CERVEAU_API_TOKEN) {
   registerCerveauApi(
     app,
-    { rag: ragService, synapses: synapsesService, graph: graphService, settings: getSettingsStore() },
+    {
+      rag: ragService,
+      synapses: synapsesService,
+      graph: graphService,
+      settings: getSettingsStore(),
+      reflection,
+    },
     CERVEAU_API_TOKEN,
   );
 }
@@ -212,6 +228,9 @@ Configure ChatGPT/Claude with:
         }
         if (learning) {
           scheduleWeeklyMaintenance(learning.service, vaultManager);
+        }
+        if (reflection) {
+          scheduleDailyReflection(reflection);
         }
         if (graphService) {
           graphService

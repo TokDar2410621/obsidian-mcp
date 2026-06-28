@@ -3,6 +3,7 @@ import type { Express, Request, Response, NextFunction } from 'express';
 import type { RagService } from '@/services/rag/rag-service';
 import type { SynapsesService } from '@/services/synapses';
 import type { GraphService } from '@/services/graph';
+import type { ReflectionService } from '@/services/reflection/reflection-service';
 import type { SettingsStore } from '@/services/settings/settings-store';
 import type { ToolResponse } from '@/mcp/handlers/types';
 import { logger } from '@/utils/logger';
@@ -12,6 +13,7 @@ export interface CerveauApiDeps {
   synapses: SynapsesService | null;
   graph: GraphService | null;
   settings: SettingsStore;
+  reflection: ReflectionService | null;
 }
 
 /**
@@ -21,7 +23,7 @@ export interface CerveauApiDeps {
  * `CERVEAU_CORS_ORIGIN` (the Vercel URL) for direct browser calls if ever needed.
  */
 export function registerCerveauApi(app: Express, deps: CerveauApiDeps, token: string): void {
-  const { rag, synapses, graph, settings } = deps;
+  const { rag, synapses, graph, settings, reflection } = deps;
   // Only reflect an explicitly-configured origin (never '*'). The documented
   // client is server-side (Next.js), which needs no CORS at all.
   const corsOrigin = process.env.CERVEAU_CORS_ORIGIN?.trim();
@@ -84,6 +86,19 @@ export function registerCerveauApi(app: Express, deps: CerveauApiDeps, token: st
       if (typeof b.question !== 'string' || !b.question.trim())
         throw new HttpError(400, 'question is required');
       return graph.graphAsk({ question: b.question, depth: numOr(b.depth, undefined) });
+    }),
+  );
+
+  // --- autonomous reflection (manual trigger for testing the daily loop) -----
+  app.post('/api/reflect', (_req, res) =>
+    run(res, async () => {
+      if (!reflection) throw new HttpError(503, 'reflection layer unavailable');
+      const r = await reflection.runCycle();
+      return {
+        success: true,
+        data: { date: r.date, processed: r.processed, file: r.reflectionFile },
+        metadata: { timestamp: new Date().toISOString() },
+      };
     }),
   );
 
