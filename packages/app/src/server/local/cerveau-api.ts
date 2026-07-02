@@ -93,7 +93,7 @@ export function registerCerveauApi(app: Express, deps: CerveauApiDeps, token: st
   app.post('/api/reflect', (_req, res) =>
     run(res, async () => {
       if (!reflection) throw new HttpError(503, 'reflection layer unavailable');
-      const r = await reflection.runCycle();
+      const r = await reflection.runCycle({ force: true });
       return {
         success: true,
         data: { date: r.date, processed: r.processed, file: r.reflectionFile },
