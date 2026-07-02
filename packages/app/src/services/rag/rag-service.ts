@@ -94,6 +94,7 @@ export class RagService {
   private chunks: EmbeddedChunk[] = [];
   private bm25: BM25Index | null = null;
   private learningsProvider: (() => Promise<string>) | null = null;
+  private recallListener: ((files: string[]) => void) | null = null;
   private loaded = false;
   private loadingPromise: Promise<void> | null = null;
   private refreshPromise: Promise<RefreshResult> | null = null;
@@ -121,6 +122,14 @@ export class RagService {
   /** Inject the feedback memory (`_learnings.md`), prepended to ask-cerveau prompts. */
   setLearningsProvider(fn: () => Promise<string>): void {
     this.learningsProvider = fn;
+  }
+
+  /**
+   * Observe which notes each answer actually cites (memory-strength signal:
+   * retrieval reinforces the trace). The listener must never break an answer.
+   */
+  setRecallListener(fn: (files: string[]) => void): void {
+    this.recallListener = fn;
   }
 
   private buildLexicalIndex(): void {
@@ -245,6 +254,12 @@ export class RagService {
       const result = await this.generator.generate(await this.withLearnings(args.question), contexts);
       if (result.refused) {
         return fail("La génération n'a produit aucune réponse exploitable.");
+      }
+
+      try {
+        this.recallListener?.([...new Set(used.map(h => h.path))]);
+      } catch {
+        /* the memory signal must never break an answer */
       }
 
       return ok({

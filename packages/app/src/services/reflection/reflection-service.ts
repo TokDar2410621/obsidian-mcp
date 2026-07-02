@@ -6,6 +6,18 @@ import type { VaultManager } from '@/services/vault-manager';
 import type { ToolResponse } from '@/mcp/handlers/types';
 import { SettingsBackedCompleter, hasChatProvider } from '@/services/llm/settings-completer';
 import { getSettingsStore } from '@/services/settings/settings-store';
+import type { MemoryStrengthStore } from '@/services/memory/memory-strength';
+import {
+  addPrediction,
+  duePredictions,
+  isExpired,
+  loadBook,
+  resolvePrediction,
+  saveBook,
+  type Prediction,
+  type PredictionBook,
+  type ResolvedPrediction,
+} from '@/services/reflection/predictions';
 import { logger } from '@/utils/logger';
 
 // --- quarantine layout ------------------------------------------------------
@@ -17,6 +29,8 @@ const STATE_MD = `${AUTO_DIR}/_etat-mental.md`; // human view of the mind
 const LOG_FILE = `${AUTO_DIR}/_cognition-log.md`;
 const INBOX_FILE = `${AUTO_DIR}/_inbox-darius.md`;
 const PRIORITIES_FILE = `${AUTO_DIR}/_priorities.md`; // optional compass, user-edited
+const SELF_FILE = `${AUTO_DIR}/_self.md`; // the self-model the mind maintains
+const MEMOIRE_MD = `${AUTO_DIR}/_memoire.md`; // memory-strength view + forgetting proposals
 
 const MAX_THREADS = 3; // a mind only holds so much at once
 const MAX_THOUGHTS = 8; // memory per thread (train of thought), bounded
@@ -27,6 +41,11 @@ const RIPE_MATURITY = 0.6;
 const MAX_LOG_ROWS = 400; // cognition-log rotation
 const PRIOR_EXCERPT = 1600;
 const CURRENT_NOTE_EXCERPT = 4000;
+const SELF_EXCERPT = 3000; // MUST be ≥ the write slice in updateSelf, or the self erodes
+const MAX_PREDICTION_CHECKS = 2; // due bets verified per cycle (bounds LLM cost)
+const ARCHIVE_MIN_AGE_DAYS = 21; // an episode younger than this is never proposed
+const ARCHIVE_STRENGTH_BELOW = 0.35; // faded traces below this become archive candidates
+const MAX_ARCHIVE_PROPOSALS = 8;
 
 type Mode = 'create' | 'improve';
 type ThreadStatus = 'active' | 'ripe' | 'crystallized' | 'faded';
@@ -73,6 +92,10 @@ export interface ReflectionDeps {
   learning: LearningService;
   vault: VaultManager;
   llm: LlmCompleter;
+  /** Memory-strength store (forgetting curve + Hebbian pairs). Optional organ. */
+  memory: MemoryStrengthStore | null;
+  /** Provider for `_learnings.md` (explicit preferences feeding the self-model). */
+  learnings: (() => Promise<string>) | null;
 }
 
 /**
@@ -85,6 +108,8 @@ export interface ReflectionDeps {
  * never silently wiped: a parse miss preserves the previous state.
  */
 export class ReflectionService {
+  private cyclePromise: Promise<ReflectionResult> | null = null;
+
   constructor(private readonly deps: ReflectionDeps) {}
 
   private maxCrystallize(): number {
@@ -93,8 +118,21 @@ export class ReflectionService {
     return Math.min(Math.floor(n), MAX_CRYSTALLIZE_CAP);
   }
 
-  /** One waking/sleeping cycle of the mind. Writes only under `08-auto/`. */
+  /**
+   * One waking/sleeping cycle of the mind. Writes only under `08-auto/`.
+   * Single-flight: a concurrent trigger (cron + forced POST) joins the running
+   * cycle instead of racing it — two cycles would overwrite each other's book
+   * and state.
+   */
   async runCycle(opts: { force?: boolean } = {}): Promise<ReflectionResult> {
+    if (this.cyclePromise) return this.cyclePromise;
+    this.cyclePromise = this.doCycle(opts).finally(() => {
+      this.cyclePromise = null;
+    });
+    return this.cyclePromise;
+  }
+
+  private async doCycle(opts: { force?: boolean }): Promise<ReflectionResult> {
     const { rag, synapses, learning, vault, llm } = this.deps;
     await rag.ensureReady();
     const date = new Date().toISOString().slice(0, 10);
@@ -109,7 +147,49 @@ export class ReflectionService {
       return { date, threads: prior.threads.length, processed: 0, reflectionFile: '' };
     }
 
-    // perceive what changed
+    // 2. CHECK BETS — learning from prediction error (the strongest signal).
+    const { book, ok: bookOk } = await loadBook(vault);
+    const lessons: string[] = [];
+    const resolvedNow: ResolvedPrediction[] = [];
+    const askDarius: Prediction[] = [];
+    if (bookOk) {
+      for (const p of duePredictions(book, date).slice(0, MAX_PREDICTION_CHECKS)) {
+        try {
+          const j = await this.judgePrediction(p);
+          if (j.status === 'confirmed' || j.status === 'refuted') {
+            const r = resolvePrediction(
+              book,
+              p.id,
+              { status: j.status, outcome: j.outcome, lesson: j.lesson },
+              date,
+            );
+            if (r) {
+              resolvedNow.push(r);
+              lessons.push(`(${r.status}) « ${p.statement} » → ${r.outcome} Leçon : ${r.lesson}`);
+            }
+          } else if (isExpired(p, date)) {
+            const r = resolvePrediction(
+              book,
+              p.id,
+              {
+                status: 'expired',
+                outcome: 'Invérifiable dans les notes après échéance.',
+                lesson: 'Parier plus vérifiable, ou demander le fait à Darius.',
+              },
+              date,
+            );
+            if (r) resolvedNow.push(r);
+            askDarius.push(p);
+          } else {
+            askDarius.push(p); // overdue but maybe Darius knows — keep it open
+          }
+        } catch (error) {
+          logger.error('Reflection: prediction check failed', { id: p.id, error: String(error) });
+        }
+      }
+    }
+
+    // 3. PERCEIVE — the signal + both compasses (learned self-model, explicit priorities).
     const [themes, gaps, links, coherence] = await Promise.all([
       synapses.findThemes({}),
       learning.findGaps(),
@@ -117,19 +197,28 @@ export class ReflectionService {
       synapses.auditCoherence({}),
     ]);
     const priorities = trunc(await this.readOptional(PRIORITIES_FILE), PRIOR_EXCERPT);
+    const selfModel = trunc(stripFrontmatter(await this.readOptional(SELF_FILE)).trim(), SELF_EXCERPT);
 
-    // 2. RUMINATE — develop threads, spawn/fade, ripen. One LLM call.
-    const state = await this.ruminate(llm, prior, {
+    // 4. RUMINATE — develop threads, spawn/fade, ripen; maybe place a bet. One LLM call.
+    const { state, bet } = await this.ruminate(llm, prior, {
       themes: arr(themes, 'themes'),
       gaps: arr(gaps, 'gaps'),
       links: arr(links, 'suggestions'),
       coherence: arr(coherence, 'issues'),
       priorities,
+      selfModel,
+      lessons,
       date,
     });
     const faded = prior.threads.filter(p => !state.threads.some(t => t.id === p.id));
 
-    // 3. CRYSTALLISE — a ripe thread produces a real artefact (create/improve).
+    // 5. BET — at most one new dated, verifiable prediction per cycle.
+    if (bookOk && bet) {
+      const placed = addPrediction(book, bet, state.threads.map(t => t.title).join(' · '), date);
+      if (placed) logger.info('Reflection: prediction placed', { id: placed.id, due: placed.expectedBy });
+    }
+
+    // 6. CRYSTALLISE — a ripe thread produces a real artefact (create/improve).
     const ripe = state.threads
       .filter(t => t.status === 'ripe')
       .sort((a, b) => b.maturity * b.salience - a.maturity * a.salience);
@@ -146,21 +235,35 @@ export class ReflectionService {
       }
     }
 
-    // 4. CONSOLIDATE — sleep: distil raw captures into proposed knowledge.
+    // 7. SELF-UPDATE — maintain the self-model from preferences, threads, lessons.
+    await this.updateSelf(selfModel, state, lessons, date);
+
+    // 8. CONSOLIDATE — sleep: distil raw captures into proposed knowledge.
     const consolidation = await this.consolidate();
 
-    // 5. WRITE — prepare everything first, write the canonical state LAST so a
+    // 9. FORGET — decay every trace; propose archiving faded old episodes.
+    const forget = this.forget(date);
+
+    // 10. WRITE — prepare everything first, write the canonical state LAST so a
     // partial failure never half-writes the mind.
     state.updated = date;
     const stateJson = JSON.stringify(state, null, 2);
     const mentalMd = renderMentalMd(date, state, faded);
     const reflectionFile = `${AUTO_DIR}/reflection-${date}.md`;
     const reflectionMd = renderReflection(date, state, crystallized, faded);
-    const inboxMd = renderInbox(date, state, crystallized, consolidation);
+    const inboxMd = renderInbox(date, state, crystallized, consolidation, {
+      book,
+      bookOk,
+      resolvedNow,
+      askDarius,
+      forgetCandidates: forget.candidates,
+    });
     try {
       await vault.writeFile(STATE_MD, mentalMd);
       await vault.writeFile(reflectionFile, reflectionMd);
       await vault.writeFile(INBOX_FILE, inboxMd);
+      if (bookOk) await saveBook(vault, book);
+      if (forget.memoireMd) await vault.writeFile(MEMOIRE_MD, forget.memoireMd);
       await this.appendLog(date, state, crystallized);
       await vault.writeFile(STATE_JSON, stateJson); // last: the source of truth
     } catch (error) {
@@ -184,16 +287,21 @@ export class ReflectionService {
 
   // --- steps ---------------------------------------------------------------
 
-  private async ruminate(llm: LlmCompleter, prior: MentalState, signal: Signal): Promise<MentalState> {
+  private async ruminate(
+    llm: LlmCompleter,
+    prior: MentalState,
+    signal: Signal,
+  ): Promise<{ state: MentalState; bet: RawBet | null }> {
     const raw = await llm.complete(RUMINATE_SYSTEM, renderRuminationInput(prior, signal), 2200);
-    const parsed = parseJsonObject<{ threads?: RawThread[] }>(raw);
+    const parsed = parseJsonObject<{ threads?: RawThread[]; prediction?: RawBet }>(raw);
     const incoming = Array.isArray(parsed?.threads) ? parsed!.threads! : [];
+    const bet = parsed?.prediction && typeof parsed.prediction === 'object' ? parsed.prediction : null;
 
     // Never wipe a populated mind on a parse/LLM miss — carry it forward.
     if (incoming.length === 0 && prior.threads.length > 0) {
       logger.warn('Reflection: 0 threads parsed — keeping previous mental state');
       const carried = prior.threads.map(t => ({ ...t, cycles: t.cycles + 1, lastFed: signal.date }));
-      return ripen({ updated: signal.date, threads: carried });
+      return { state: ripen({ updated: signal.date, threads: carried }), bet: null };
     }
 
     const priorById = new Map(prior.threads.map(t => [t.id, t]));
@@ -232,7 +340,105 @@ export class ReflectionService {
       });
       if (threads.length >= MAX_THREADS) break;
     }
-    return ripen({ updated: signal.date, threads });
+    return { state: ripen({ updated: signal.date, threads }), bet };
+  }
+
+  /** Verify a due bet against the vault, then judge: confirmed / refuted / unknown. */
+  private async judgePrediction(
+    p: Prediction,
+  ): Promise<{ status: 'confirmed' | 'refuted' | 'unknown'; outcome: string; lesson: string }> {
+    const asked = await this.deps.rag.askCerveau({
+      question:
+        `Le ${p.madeOn}, une prédiction a été faite : « ${p.statement} » (échéance ${p.expectedBy}). ` +
+        `D'après les notes les plus récentes, que s'est-il réellement passé à ce sujet ?`,
+    });
+    const d = asked.success ? (asked.data as Record<string, unknown>) : null;
+    const evidence = String((d?.answer as string) ?? '').trim();
+    const raw = await this.deps.llm.complete(
+      VERIFY_SYSTEM,
+      `Prédiction (faite le ${p.madeOn}, échéance ${p.expectedBy}, confiance ${p.confidence}) :\n« ${p.statement} »\n\n` +
+        `Ce que disent les notes :\n${evidence || '(rien trouvé)'}`,
+      500,
+    );
+    const v = parseJsonObject<{ status?: string; outcome?: string; lesson?: string }>(raw);
+    const status = v?.status === 'confirmed' || v?.status === 'refuted' ? v.status : 'unknown';
+    return {
+      status,
+      outcome: String(v?.outcome ?? '').trim(),
+      lesson: String(v?.lesson ?? '').trim(),
+    };
+  }
+
+  /** Maintain the self-model (identity, goals, learned preferences → valence). */
+  private async updateSelf(
+    current: string,
+    state: MentalState,
+    lessons: string[],
+    date: string,
+  ): Promise<void> {
+    try {
+      const learned = this.deps.learnings
+        ? trunc((await this.deps.learnings()).trim(), SELF_EXCERPT)
+        : '';
+      const raw = await this.deps.llm.complete(
+        SELF_SYSTEM,
+        [
+          `MODÈLE ACTUEL :\n${current || '(aucun encore — première construction)'}`,
+          `PRÉFÉRENCES EXPLICITES DE DARIUS (_learnings.md) :\n${learned || '(aucune)'}`,
+          `MES FILS DE PENSÉE :\n${
+            state.threads.map(t => `- ${t.title} (${t.mode} → ${t.target}) : ${t.why}`).join('\n') ||
+            '(aucun)'
+          }`,
+          `LEÇONS RÉCENTES DE MES PRÉDICTIONS :\n${lessons.join('\n') || '(aucune)'}`,
+        ].join('\n\n'),
+        1200,
+      );
+      const body = raw.trim();
+      if (!body) return; // never wipe the self on an empty answer
+      const md = [
+        '---',
+        'type: self-model',
+        'tags: [auto, self]',
+        `updated: ${date}`,
+        '---',
+        '',
+        body.slice(0, 3000),
+        '',
+      ].join('\n');
+      await this.deps.vault.writeFile(SELF_FILE, md);
+    } catch (error) {
+      logger.error('Reflection: self-update failed', { error: String(error) });
+    }
+  }
+
+  /** Decay all memory traces; propose archiving faded, old, episodic notes. */
+  private forget(date: string): { memoireMd: string; candidates: string[] } {
+    const memory = this.deps.memory;
+    if (!memory) return { memoireMd: '', candidates: [] };
+    try {
+      memory.decay(isSemanticFile);
+      // Strength 0 means "never recalled SINCE the store exists" — meaningless
+      // on a young store. Wait until it has observed long enough to judge.
+      if (memory.ageDays(date) <= ARCHIVE_MIN_AGE_DAYS) {
+        return { memoireMd: renderMemoire(date, memory, []), candidates: [] };
+      }
+      const files = [...new Set(this.deps.rag.embeddedChunks.map(c => c.file))];
+      const candidates = files
+        .filter(isEpisodicFile)
+        .filter(f => !isAnchorFile(f))
+        .map(f => ({ f, d: fileDate(f), s: memory.strengthOf(f) }))
+        .filter(
+          (x): x is { f: string; d: string; s: number } =>
+            x.d !== null && daysSince(x.d, date) > ARCHIVE_MIN_AGE_DAYS && x.s < ARCHIVE_STRENGTH_BELOW,
+        )
+        .sort((a, b) => a.s - b.s || a.d.localeCompare(b.d))
+        .slice(0, MAX_ARCHIVE_PROPOSALS)
+        .map(x => x.f);
+      return { memoireMd: renderMemoire(date, memory, candidates), candidates };
+    } catch (error) {
+      logger.error('Reflection: forget step failed', { error: String(error) });
+      return { memoireMd: '', candidates: [] };
+    }
   }
 
   private async crystallise(thread: Thread, date: string): Promise<Crystallized> {
@@ -368,6 +574,10 @@ export function createReflectionService(
   synapses: SynapsesService,
   learning: LearningService,
   vault: VaultManager,
+  organs: {
+    memory?: MemoryStrengthStore | null;
+    learnings?: (() => Promise<string>) | null;
+  } = {},
 ): ReflectionService | null {
   if (!hasChatProvider()) return null;
   return new ReflectionService({
@@ -376,6 +586,8 @@ export function createReflectionService(
     learning,
     vault,
     llm: new SettingsBackedCompleter(getSettingsStore()),
+    memory: organs.memory ?? null,
+    learnings: organs.learnings ?? null,
   });
 }
 
@@ -385,7 +597,15 @@ interface Signal {
   links: unknown[];
   coherence: unknown[];
   priorities: string;
+  selfModel: string;
+  lessons: string[];
   date: string;
+}
+
+interface RawBet {
+  statement?: unknown;
+  expectedBy?: unknown;
+  confidence?: unknown;
 }
 
 interface RawThread {
@@ -439,11 +659,13 @@ const RUMINATE_SYSTEM = [
   "- Tu peux faire ÉCLORE au plus 1 nouveau fil si quelque chose d'important n'y est pas encore.",
   '- Laisse FANER un fil résolu ou sans intérêt en NE LE RENVOYANT PAS (ne renvoie pas de fil avec status "faded", omets-le simplement).',
   '- Pour chaque fil, dis vers quoi il PENCHE : "create" (une note/synthèse/hub qui manque) ou "improve" (une note existante faible/périmée à renforcer), et sa "target" (ce qu\'il faut créer, ou le chemin de la note à améliorer).',
-  '- salience = importance/urgence (0..1, ancrée sur les projets actifs et le non-résolu). maturity = à quel point le fil est développé (0..1) ; elle ne redescend pas.',
+  '- salience = importance/urgence (0..1), ancrée sur TON MODÈLE DE SOI, les priorités explicites de Darius et le non-résolu. maturity = à quel point le fil est développé (0..1) ; elle ne redescend pas.',
   '- status = "ripe" UNIQUEMENT quand le fil est assez mûr ET a une cible claire, prêt à produire. Sinon "active".',
+  '- Tu peux poser AU PLUS UN pari ("prediction") : une attente datée et VÉRIFIABLE sur le réel, dont l\'échéance pourra te donner tort ou raison. Tes erreurs de prédiction sont ton plus fort signal d\'apprentissage — intègre les LEÇONS FRAÎCHES fournies.',
   `Maximum ${MAX_THREADS} fils actifs. Reste concentré : peu de fils profonds valent mieux que beaucoup de superficiels.`,
   'Réponds UNIQUEMENT en JSON, sans aucun texte avant ou après :',
-  '{"threads":[{"id":"slug-stable","title":"…","why":"…","mode":"create|improve","target":"…","salience":0.8,"maturity":0.6,"status":"active|ripe","new_thought":"la pensée ajoutée ce cycle"}]}',
+  '{"threads":[{"id":"slug-stable","title":"…","why":"…","mode":"create|improve","target":"…","salience":0.8,"maturity":0.6,"status":"active|ripe","new_thought":"la pensée ajoutée ce cycle"}],"prediction":{"statement":"…","expectedBy":"YYYY-MM-DD","confidence":0.6}}',
+  'Le champ "prediction" est optionnel : omets-le si aucun pari ne s\'impose.',
 ].join('\n');
 
 const CREATE_SYSTEM = [
@@ -458,6 +680,21 @@ const IMPROVE_SYSTEM = [
   'Produis en Markdown soit la version améliorée complète, soit une liste précise de changements (ajouts, corrections, liens à créer).',
   "Sois concret et conservateur : ne casse pas ce qui marche, ne supprime pas sans raison, n'invente pas de faits.",
   'Pas de frontmatter. Réponds uniquement avec le Markdown.',
+].join('\n');
+
+const VERIFY_SYSTEM = [
+  "Tu vérifies une PRÉDICTION passée du cerveau contre ce que disent les notes aujourd'hui.",
+  'Décide : "confirmed" (les notes montrent que ça s\'est produit), "refuted" (les notes montrent le contraire), "unknown" (les notes ne permettent pas de trancher).',
+  "Sois exigeant : ne confirme/réfute que sur preuve dans les notes. outcome = ce qui s'est réellement passé (1 phrase). lesson = ce que l'écart (ou la confirmation) apprend, actionnable (1-2 phrases) ; une réfutation vaut plus qu'une confirmation.",
+  'Réponds UNIQUEMENT en JSON : {"status":"confirmed|refuted|unknown","outcome":"…","lesson":"…"}',
+].join('\n');
+
+const SELF_SYSTEM = [
+  "Tu maintiens le MODÈLE DE SOI du deuxième cerveau de Darius : la représentation de qui il est, de ses buts actifs et de ses préférences, qui sert de boussole pour peser l'importance de tout ce que le cerveau perçoit et rumine.",
+  'On te donne le modèle actuel, les préférences explicites (_learnings.md), les fils de pensée en cours et les leçons récentes.',
+  'Mets le modèle à jour : intègre le nouveau, garde le stable, retire le périmé. Sois conservateur : ne perds jamais une préférence explicite.',
+  'Structure en Markdown, max ~2000 caractères : ## Qui est Darius / ## Buts actifs / ## Préférences apprises / ## Ce qui compte maintenant.',
+  'Réponds UNIQUEMENT avec le Markdown (pas de frontmatter, pas de commentaire).',
 ].join('\n');
 
 const CRITIC_SYSTEM = [
@@ -479,7 +716,13 @@ function renderRuminationInput(prior: MentalState, s: Signal): string {
     );
     if (t.thoughts.length) b.push(`    pensées: ${t.thoughts.slice(-4).join(' | ')}`);
   }
-  b.push('', 'PRIORITÉS DE DARIUS :', s.priorities || '(non définies — déduis-les des projets actifs)', '');
+  b.push('', 'MON MODÈLE DE SOI (boussole apprise) :', s.selfModel || '(pas encore construit — première rumination)', '');
+  b.push('PRIORITÉS EXPLICITES DE DARIUS (prioritaires sur tout) :', s.priorities || '(non définies — déduis-les des projets actifs)', '');
+  if (s.lessons.length) {
+    b.push('LEÇONS FRAÎCHES (mes prédictions vérifiées ce cycle) :');
+    for (const l of s.lessons) b.push(`- ${l}`);
+    b.push('');
+  }
   b.push("CE QUE JE PERÇOIS AUJOURD'HUI :");
   b.push(`Lacunes (${s.gaps.length}) :`);
   for (const g of s.gaps.slice(0, 8)) {
@@ -556,7 +799,21 @@ function renderReflection(date: string, state: MentalState, cz: Crystallized[], 
   return o.join('\n');
 }
 
-function renderInbox(date: string, state: MentalState, cz: Crystallized[], consolidation: string[]): string {
+interface InboxExtras {
+  book: PredictionBook;
+  bookOk: boolean;
+  resolvedNow: ResolvedPrediction[];
+  askDarius: Prediction[];
+  forgetCandidates: string[];
+}
+
+function renderInbox(
+  date: string,
+  state: MentalState,
+  cz: Crystallized[],
+  consolidation: string[],
+  extras: InboxExtras,
+): string {
   const o: string[] = [];
   o.push('---', 'type: hub', 'tags: [auto, inbox, hub]', `updated: ${date}`, '---', '');
   o.push('# 📥 Inbox cerveau → Darius', '');
@@ -580,17 +837,44 @@ function renderInbox(date: string, state: MentalState, cz: Crystallized[], conso
     );
   o.push('');
 
+  o.push('## 🔮 Mes paris sur le réel');
+  if (!extras.bookOk)
+    o.push(
+      '- ⚠️ `_predictions.json` illisible — paris suspendus ce cycle, fichier préservé, à réparer à la main.',
+    );
+  else if (extras.resolvedNow.length === 0 && extras.book.open.length === 0)
+    o.push('- _Aucun pari en cours._');
+  for (const r of extras.resolvedNow)
+    o.push(
+      `- **${labelBet(r.status)}** : « ${r.statement} » → ${r.outcome} **Leçon** : ${r.lesson}`,
+    );
+  for (const p of extras.book.open)
+    o.push(`- ⏳ « ${p.statement} » _(échéance ${p.expectedBy}, confiance ${p.confidence})_`);
+  o.push('');
+
   o.push('## 🧹 À consolider (captures → savoir)');
   if (consolidation.length === 0) o.push('- _Rien à consolider._');
   for (const p of consolidation) o.push(`- ${p}`);
   o.push('');
 
+  o.push("## 🍂 Oubli proposé (épisodes fanés → \`09-archive/\`)");
+  if (extras.forgetCandidates.length === 0) o.push('- _Rien à archiver._');
+  for (const f of extras.forgetCandidates) o.push(`- \`${f}\``);
+  if (extras.forgetCandidates.length) o.push('', 'Détail des forces : [[_memoire]].');
+  o.push('');
+
   const ask = cz.filter(c => c.verdict === 'needs_human');
   o.push('## ❓ Ton avis demandé');
-  if (ask.length === 0) o.push('- _Aucune question bloquante._');
+  if (ask.length === 0 && extras.askDarius.length === 0) o.push('- _Aucune question bloquante._');
   for (const c of ask) o.push(`- **${c.thread.target}** — ${c.critique || c.thread.why}`);
+  for (const p of extras.askDarius)
+    o.push(`- Pari invérifiable dans les notes : « ${p.statement} » — que s'est-il passé ?`);
   o.push('');
   return o.join('\n');
+}
+
+function labelBet(status: ResolvedPrediction['status']): string {
+  return status === 'confirmed' ? '✅ Confirmé' : status === 'refuted' ? '❌ Réfuté' : '⌛ Expiré';
 }
 
 function wrapDraft(thread: Thread, body: string, date: string, citations: string[]): string {
@@ -638,7 +922,70 @@ function rotateLog(text: string): string {
   return [...headerBlock, ...rows.slice(-MAX_LOG_ROWS)].join('\n') + '\n';
 }
 
+function renderMemoire(date: string, memory: MemoryStrengthStore, candidates: string[]): string {
+  const o: string[] = [];
+  o.push('---', 'type: hub', 'tags: [auto, memoire, hub]', `updated: ${date}`, '---', '');
+  o.push('# 🧲 Mémoire du cerveau', '');
+  o.push(
+    `> Force des traces, ${date} : le rappel renforce, le temps efface. Propose-only : rien n'est archivé sans toi.`,
+    '',
+  );
+  o.push('## 🔥 Souvenirs les plus forts (souvent rappelés)');
+  const top = memory.top(10);
+  if (top.length === 0) o.push('- _Aucun rappel enregistré encore._');
+  for (const t of top) o.push(`- [[${base(t.file)}]] — force ${t.s}, ${t.r} rappels`);
+  o.push('');
+  o.push('## 🔗 Liens chauds (se rappellent ensemble — hebbien)');
+  const pairs = memory.hotPairs(6);
+  if (pairs.length === 0) o.push('- _Pas encore de co-activations répétées._');
+  for (const p of pairs) o.push(`- [[${base(p.a)}]] ⇄ [[${base(p.b)}]] (${p.count}×)`);
+  o.push('');
+  o.push("## 🍂 Proposé à l'oubli (épisodes anciens jamais rappelés)");
+  if (candidates.length === 0) o.push('- _Rien à archiver pour le moment._');
+  for (const c of candidates) o.push(`- \`${c}\` → \`09-archive/\``);
+  o.push('');
+  return o.join('\n');
+}
+
 // --- helpers ----------------------------------------------------------------
+
+/** Distilled knowledge endures; episodes fade fast. */
+function isSemanticFile(f: string): boolean {
+  return (
+    f.startsWith('02-knowledge/') ||
+    f.includes('_synthese') ||
+    /\/(decisions|learnings)\//.test(f) ||
+    f.startsWith('00-')
+  );
+}
+
+function isEpisodicFile(f: string): boolean {
+  return f.startsWith('01-raw/') || f.startsWith('03-daily/') || f.includes('/rapports/');
+}
+
+/** Hubs, indexes and ACTIF notes are anchors — never proposed for archiving. */
+function isAnchorFile(f: string): boolean {
+  const b = (f.split('/').pop() ?? f).toLowerCase();
+  return b.startsWith('_') || b.startsWith('00-') || b.startsWith('actif') || b.includes('index');
+}
+
+function fileDate(f: string): string | null {
+  const m = f.match(/20\d{2}-\d{2}-\d{2}/);
+  return m ? m[0] : null;
+}
+
+function daysSince(from: string, to: string): number {
+  const a = Date.parse(from);
+  const b = Date.parse(to);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return 0;
+  return Math.max(0, Math.round((b - a) / 86_400_000));
+}
+
+function stripFrontmatter(content: string): string {
+  if (!content.startsWith('---')) return content;
+  const end = content.indexOf('\n---', 3);
+  return end === -1 ? content : content.slice(end + 4);
+}
 
 function arr(r: ToolResponse, key: string): unknown[] {
   if (!r.success || !r.data) return [];
