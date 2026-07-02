@@ -37,6 +37,7 @@ import { registerLearningTools } from '@/mcp/learning-tool-registrations';
 import { scheduleWeeklyMaintenance } from '@/services/learning/maintenance-cron';
 import { createReflectionService } from '@/services/reflection/reflection-service';
 import { scheduleDailyReflection } from '@/services/reflection/reflection-cron';
+import { createMemoryStrength } from '@/services/memory/memory-strength';
 import { createBucketStore } from '@/services/storage/bucket-store';
 import { registerStorageTools } from '@/mcp/storage-tool-registrations';
 import { registerUploadRoutes } from '@/server/local/upload-page';
@@ -128,12 +129,23 @@ if (learning && ragService) {
   ragService.setLearningsProvider(() => learning.store.getLearnings());
 }
 
-// Optional autonomous reflection loop (level 3): once a day the cerveau sets its
-// own agenda, reasons over the vault, and self-critiques — propose-only into
-// `08-auto/`. Needs RAG + Synapses + Learning (so an LLM provider).
+// Memory strength (forgetting curve): every ask-cerveau citation reinforces the
+// cited notes' traces; the daily reflection decays them and proposes archives.
+const memoryStore = ragService ? createMemoryStrength() : null;
+if (ragService && memoryStore) {
+  ragService.setRecallListener(files => memoryStore.recordRecall(files));
+}
+
+// Optional autonomous mind (level 3): once a day the cerveau ruminates its
+// persistent threads, checks its predictions, maintains its self-model and
+// crystallises ripe threads — propose-only into `08-auto/`. Needs RAG +
+// Synapses + Learning (so an LLM provider).
 const reflection =
   ragService && synapsesService && learning
-    ? createReflectionService(ragService, synapsesService, learning.service, vaultManager)
+    ? createReflectionService(ragService, synapsesService, learning.service, vaultManager, {
+        memory: memoryStore,
+        learnings: () => learning.store.getLearnings(),
+      })
     : null;
 
 // Optional object-storage tools (put-file / get-file) backed by an S3-compatible
