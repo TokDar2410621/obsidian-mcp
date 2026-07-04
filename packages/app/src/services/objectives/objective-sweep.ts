@@ -217,7 +217,7 @@ export class ObjectiveSweepService {
           state.deadlineAlerts[key] = todayIso();
           alerts.push(
             `- 🔴 **${objective.title}** : échéance ${objective.echeance} DÉPASSÉE, ` +
-              `${remainingConditions} condition(s) ouverte(s) — ${link}. Proposition : passer \`statut: en-retard\`.`,
+              `${remainingConditions} condition(s) ouverte(s) : ${link}. Proposition : passer \`statut: en-retard\`.`,
           );
         }
       } else if (days <= DEADLINE_WARN_DAYS) {
@@ -226,7 +226,7 @@ export class ObjectiveSweepService {
           state.deadlineAlerts[key] = todayIso();
           alerts.push(
             `- 🟠 **${objective.title}** : échéance ${objective.echeance} dans ${days} jour(s), ` +
-              `${remainingConditions} condition(s) ouverte(s) — ${link}.`,
+              `${remainingConditions} condition(s) ouverte(s) : ${link}.`,
           );
         }
       }
@@ -248,7 +248,7 @@ export class ObjectiveSweepService {
           .replace(/\[\[|\]\]|\*\*|~~/g, '')
           .replace(/^-\s*/, '');
         await this.deps.notify.push({
-          title: 'Cerveau — objectifs',
+          title: 'Cerveau : objectifs',
           message: `${parts.join(' + ')}.\n${first}\nDétail : 08-auto/_objectifs-propositions.md`,
           priority: overdue ? 4 : 3,
           tags: ['brain'],

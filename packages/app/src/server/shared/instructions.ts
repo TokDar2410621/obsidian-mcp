@@ -34,4 +34,8 @@ The vault tracks goals as objective notes: frontmatter 'type: objectif', 'statut
 
 RULE — after ANY capture or ingestion into the vault, sweep the open objectives: 'search-vault' for 'type: objectif' + 'statut: ouvert', confront the new info with each unmet condition's criteria. Every criterion verifiable with citable proof: tick the box and fill 'Preuve :' with the [[wikilink]] and the date. Any doubt: propose the tick in '08-auto/_inbox-darius.md' instead — never tick without proof. Deadline passed with open conditions: set 'statut: en-retard'. All conditions ticked: set 'statut: complet'.
 
-Announce only when: a condition was just met (one line), an objective is complete (list the verified criteria — never a bare "you have everything"), a deadline falls within 7 days with open conditions, or a blocker exists. The server also runs a deterministic sweep that stages candidate matches and deadline alerts under '08-auto/_objectifs-propositions.md' — review them, verify criteria, then tick with proof or dismiss.`;
+Announce only when: a condition was just met (one line), an objective is complete (list the verified criteria; never a bare "you have everything"), a deadline falls within 7 days with open conditions, or a blocker exists. The server also runs a deterministic sweep that stages candidate matches and deadline alerts under '08-auto/_objectifs-propositions.md'. Review them, verify criteria, then tick with proof or dismiss.
+
+**IMPORTANT: Writing style (stop-slop)**
+
+All prose written into the vault (notes, titles, announcements, digests) is French unless the note dictates otherwise, active voice, no filler, and NEVER contains an em-dash (—). Replace it with ':', ';' or a new sentence. Existing notes are not to be rewritten for style; the rule applies to everything written from now on.`;

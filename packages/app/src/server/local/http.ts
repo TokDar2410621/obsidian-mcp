@@ -239,7 +239,7 @@ Health Check:
 
 Configure ChatGPT/Claude with:
   - Client ID: ${OAUTH_CLIENT_ID}
-  - Client Secret: ${OAUTH_CLIENT_SECRET.slice(0, 4)}${'•'.repeat(8)} (masked — read it from the env, never from logs)
+  - Client Secret: ${OAUTH_CLIENT_SECRET.slice(0, 4)}${'•'.repeat(8)} (masked; read it from the env, never from logs)
   - Authorization URL: ${BASE_URL}/oauth/authorize
   - Token URL: ${BASE_URL}/oauth/token
   `);
