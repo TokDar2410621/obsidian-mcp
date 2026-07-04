@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import type { Express, Request, Response } from 'express';
 import type { RagService } from '@/services/rag';
 import type { GraphService } from '@/services/graph';
+import type { ObjectiveSweepService } from '@/services/objectives/objective-sweep';
 import { logger } from '@/utils/logger';
 
 /**
@@ -30,6 +31,7 @@ export function registerGithubWebhook(
   app: Express,
   rag: RagService,
   graph?: GraphService | null,
+  sweep?: ObjectiveSweepService | null,
 ): boolean {
   const secret = process.env.GITHUB_WEBHOOK_SECRET;
   if (!secret) {
@@ -56,8 +58,15 @@ export function registerGithubWebhook(
         .refresh()
         .then(result => {
           logger.info('RAG reindex (webhook) complete', result);
-          return graph?.build();
+          // Deterministic objective sweep on the fresh index: every new/changed
+          // note is confronted with the open objectives' unmet conditions
+          // (propose-only, dedup'd — a no-op push converges immediately).
+          return sweep
+            ?.runSweep()
+            .then(s => logger.info('Objective sweep (webhook) done', { ...s }))
+            .catch(error => logger.error('Objective sweep (webhook) failed', { error: String(error) }));
         })
+        .then(() => graph?.build())
         .then(g => {
           if (g) logger.info('Graph rebuild (webhook) complete', g);
         })

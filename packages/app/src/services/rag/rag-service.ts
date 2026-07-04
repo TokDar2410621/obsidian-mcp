@@ -119,6 +119,17 @@ export class RagService {
     return this.chunks;
   }
 
+  /**
+   * Embed short query texts (L2-normalised), reusing the index's embedder.
+   * Consumed by the objective sweep to vectorise condition criteria without
+   * dragging the embedding provider through another dependency path.
+   */
+  async embedQueries(texts: string[]): Promise<Float32Array[]> {
+    if (texts.length === 0) return [];
+    const vectors = await this.embedder.embed(texts);
+    return vectors.map(v => normalize(v));
+  }
+
   /** Inject the feedback memory (`_learnings.md`), prepended to ask-cerveau prompts. */
   setLearningsProvider(fn: () => Promise<string>): void {
     this.learningsProvider = fn;
