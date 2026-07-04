@@ -39,6 +39,7 @@ import { createReflectionService } from '@/services/reflection/reflection-servic
 import { scheduleDailyReflection } from '@/services/reflection/reflection-cron';
 import { ObjectiveSweepService } from '@/services/objectives/objective-sweep';
 import { scheduleObjectiveSweep } from '@/services/objectives/objective-sweep-cron';
+import { createNotifier } from '@/services/notify/notifier';
 import { createMemoryStrength } from '@/services/memory/memory-strength';
 import { createBucketStore } from '@/services/storage/bucket-store';
 import { registerStorageTools } from '@/mcp/storage-tool-registrations';
@@ -150,12 +151,15 @@ const reflection =
       })
     : null;
 
+// Push channel to the human (ntfy). Null unless NTFY_TOPIC is set.
+const notifier = createNotifier();
+
 // Deterministic objective sweep (closes the vault's open loops): after each
 // reindex it confronts new/changed notes with the open objectives' unmet
 // conditions and stages proposals + deadline alerts under `08-auto/`.
 // Pure embeddings + cosine over the existing index — no LLM required.
 const objectiveSweep = ragService
-  ? new ObjectiveSweepService({ rag: ragService, vault: vaultManager })
+  ? new ObjectiveSweepService({ rag: ragService, vault: vaultManager, notify: notifier })
   : null;
 
 // Optional object-storage tools (put-file / get-file) backed by an S3-compatible
@@ -253,6 +257,9 @@ Configure ChatGPT/Claude with:
         }
         if (reflection) {
           scheduleDailyReflection(reflection);
+        }
+        if (notifier) {
+          console.log('✓ ntfy notifications enabled');
         }
         if (objectiveSweep) {
           scheduleObjectiveSweep(objectiveSweep);

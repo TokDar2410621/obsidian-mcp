@@ -223,6 +223,32 @@ describe('ObjectiveSweepService', () => {
     expect(result.deadlineAlerts).toBe(0);
   });
 
+  it('pushes ONE notification when a run has news, with high priority when overdue', async () => {
+    const pushed: any[] = [];
+    const notify = { push: async (n: any) => void pushed.push(n) };
+    sweep = new ObjectiveSweepService({ rag, vault, notify });
+    vault.files.set('00-personnel/objectif-caq.md', overdueObjective('2020-01-01'));
+    rag.chunks.push(chunk('01-raw/docs/attestation.md', 'attestation assurance GreenShield reçue'));
+
+    await sweep.runSweep();
+
+    expect(pushed).toHaveLength(1);
+    expect(pushed[0].priority).toBe(4); // overdue -> high
+    expect(pushed[0].message).toContain('échéance');
+    expect(pushed[0].message).toContain('proposition');
+  });
+
+  it('stays silent (no push) when a run has nothing to report', async () => {
+    const pushed: any[] = [];
+    const notify = { push: async (n: any) => void pushed.push(n) };
+    sweep = new ObjectiveSweepService({ rag, vault, notify });
+
+    await sweep.runSweep();
+    await sweep.runSweep();
+
+    expect(pushed).toHaveLength(0);
+  });
+
   it('ignores the objective template and 08-auto as matching sources', async () => {
     vault.files.set('_templates/objectif.md', OBJECTIVE_NOTE);
     rag.chunks.push(chunk('_templates/objectif.md', 'assurance criteres preuve', ['objectif']));
