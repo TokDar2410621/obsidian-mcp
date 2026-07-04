@@ -13,7 +13,10 @@ const AUTO_DIR = '08-auto';
 const STATE_FILE = `${AUTO_DIR}/_objectifs-sweep.json`;
 const PROPOSALS_FILE = `${AUTO_DIR}/_objectifs-propositions.md`;
 
-const DEFAULT_MATCH_THRESHOLD = 0.45; // cosine, tune with OBJECTIVE_MATCH_THRESHOLD
+// Calibrated on the vault's first full sweep (2026-07-04): true positives
+// (insurance attestation vs insurance condition) scored 0.63-0.80, noise
+// clustered at 0.50-0.59. 0.60 keeps the signal, kills the noise.
+const DEFAULT_MATCH_THRESHOLD = 0.6; // cosine, tune with OBJECTIVE_MATCH_THRESHOLD
 const DEADLINE_WARN_DAYS = 7;
 const MAX_PROPOSAL_SECTIONS = 30; // proposals file rotation (sections kept)
 
