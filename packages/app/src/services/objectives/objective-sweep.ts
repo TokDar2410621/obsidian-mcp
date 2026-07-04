@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import type { VaultManager } from '@/services/vault-manager';
 import type { EmbeddedChunk } from '@/services/rag/types';
+import type { NotifyPusher } from '@/services/notify/notifier';
 import { dot } from '@/services/rag/cosine';
 import { logger } from '@/utils/logger';
 
@@ -69,6 +70,8 @@ interface SweepState {
 export interface ObjectiveSweepDeps {
   rag: SweepRag;
   vault: VaultManager;
+  /** Optional push channel (ntfy). One notification per run that has news. */
+  notify?: NotifyPusher | null;
 }
 
 // --- parsing ------------------------------------------------------------------
@@ -235,6 +238,22 @@ export class ObjectiveSweepService {
 
     if (proposals.length > 0 || alerts.length > 0) {
       await this.appendProposals(proposals, alerts);
+      // Reach the human: one push per run that has news (never one per item).
+      if (this.deps.notify) {
+        const overdue = alerts.some(a => a.includes('DÉPASSÉE'));
+        const parts: string[] = [];
+        if (alerts.length > 0) parts.push(`${alerts.length} échéance(s)`);
+        if (proposals.length > 0) parts.push(`${proposals.length} proposition(s) de coche`);
+        const first = (alerts[0] ?? proposals[0])
+          .replace(/\[\[|\]\]|\*\*|~~/g, '')
+          .replace(/^-\s*/, '');
+        await this.deps.notify.push({
+          title: 'Cerveau — objectifs',
+          message: `${parts.join(' + ')}.\n${first}\nDétail : 08-auto/_objectifs-propositions.md`,
+          priority: overdue ? 4 : 3,
+          tags: ['brain'],
+        });
+      }
     }
     if (dirty) {
       state.updatedAt = new Date().toISOString();
