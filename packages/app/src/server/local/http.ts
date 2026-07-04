@@ -37,6 +37,8 @@ import { registerLearningTools } from '@/mcp/learning-tool-registrations';
 import { scheduleWeeklyMaintenance } from '@/services/learning/maintenance-cron';
 import { createReflectionService } from '@/services/reflection/reflection-service';
 import { scheduleDailyReflection } from '@/services/reflection/reflection-cron';
+import { ObjectiveSweepService } from '@/services/objectives/objective-sweep';
+import { scheduleObjectiveSweep } from '@/services/objectives/objective-sweep-cron';
 import { createMemoryStrength } from '@/services/memory/memory-strength';
 import { createBucketStore } from '@/services/storage/bucket-store';
 import { registerStorageTools } from '@/mcp/storage-tool-registrations';
@@ -148,6 +150,14 @@ const reflection =
       })
     : null;
 
+// Deterministic objective sweep (closes the vault's open loops): after each
+// reindex it confronts new/changed notes with the open objectives' unmet
+// conditions and stages proposals + deadline alerts under `08-auto/`.
+// Pure embeddings + cosine over the existing index — no LLM required.
+const objectiveSweep = ragService
+  ? new ObjectiveSweepService({ rag: ragService, vault: vaultManager })
+  : null;
+
 // Optional object-storage tools (put-file / get-file) backed by an S3-compatible
 // bucket (e.g. a Railway Bucket). Null unless the bucket env vars are set — keeps
 // binaries (images, PDFs) out of the git vault. Independent of RAG/Anthropic.
@@ -195,7 +205,7 @@ registerOAuthRoutes(app, {
 registerMcpRoute(app, mcpServer);
 
 if (ragService) {
-  registerGithubWebhook(app, ragService, graphService);
+  registerGithubWebhook(app, ragService, graphService, objectiveSweep);
 }
 
 const PORT = parseInt(process.env.PORT || '3000');
@@ -243,6 +253,15 @@ Configure ChatGPT/Claude with:
         }
         if (reflection) {
           scheduleDailyReflection(reflection);
+        }
+        if (objectiveSweep) {
+          scheduleObjectiveSweep(objectiveSweep);
+          // Catch-up sweep at boot: deadlines fire by calendar, and pushes may
+          // have landed while the container was down.
+          objectiveSweep
+            .runSweep()
+            .then(s => console.log('✓ Objective sweep (boot)', s))
+            .catch(error => console.error('Objective sweep (boot) failed', error));
         }
         if (graphService) {
           graphService
