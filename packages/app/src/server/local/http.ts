@@ -39,6 +39,8 @@ import { createReflectionService } from '@/services/reflection/reflection-servic
 import { scheduleDailyReflection } from '@/services/reflection/reflection-cron';
 import { ObjectiveSweepService } from '@/services/objectives/objective-sweep';
 import { scheduleObjectiveSweep } from '@/services/objectives/objective-sweep-cron';
+import { CaptureLinkSweepService } from '@/services/captures/capture-link-sweep';
+import { scheduleCaptureLinkSweep } from '@/services/captures/capture-link-cron';
 import { createNotifier } from '@/services/notify/notifier';
 import { registerCaptureRoute } from '@/server/local/capture-route';
 import { createMemoryStrength } from '@/services/memory/memory-strength';
@@ -163,6 +165,13 @@ const objectiveSweep = ragService
   ? new ObjectiveSweepService({ rag: ragService, vault: vaultManager, notify: notifier })
   : null;
 
+// Capture link sweep (makes captures serve): links fresh inbox captures to the
+// project each could advance, stages proposals under `08-auto/` and pushes ntfy.
+// Same embeddings-over-index approach as the objective sweep — no LLM required.
+const captureLink = ragService
+  ? new CaptureLinkSweepService({ rag: ragService, vault: vaultManager, notify: notifier })
+  : null;
+
 // Optional object-storage tools (put-file / get-file) backed by an S3-compatible
 // bucket (e.g. a Railway Bucket). Null unless the bucket env vars are set — keeps
 // binaries (images, PDFs) out of the git vault. Independent of RAG/Anthropic.
@@ -274,6 +283,14 @@ Configure ChatGPT/Claude with:
             .runSweep()
             .then(s => console.log('✓ Objective sweep (boot)', s))
             .catch(error => console.error('Objective sweep (boot) failed', error));
+        }
+        if (captureLink) {
+          scheduleCaptureLinkSweep(captureLink);
+          // Catch-up at boot: link any captures that landed while down.
+          captureLink
+            .runSweep()
+            .then(s => console.log('✓ Capture link sweep (boot)', s))
+            .catch(error => console.error('Capture link sweep (boot) failed', error));
         }
         if (graphService) {
           graphService
