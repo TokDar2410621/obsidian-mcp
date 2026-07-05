@@ -223,7 +223,7 @@ registerOAuthRoutes(app, {
 registerMcpRoute(app, mcpServer);
 
 if (ragService) {
-  registerGithubWebhook(app, ragService, graphService, objectiveSweep);
+  registerGithubWebhook(app, ragService, graphService, objectiveSweep, captureLink);
 }
 
 const PORT = parseInt(process.env.PORT || '3000');

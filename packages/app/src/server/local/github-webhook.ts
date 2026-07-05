@@ -3,6 +3,7 @@ import type { Express, Request, Response } from 'express';
 import type { RagService } from '@/services/rag';
 import type { GraphService } from '@/services/graph';
 import type { ObjectiveSweepService } from '@/services/objectives/objective-sweep';
+import type { CaptureLinkSweepService } from '@/services/captures/capture-link-sweep';
 import { logger } from '@/utils/logger';
 
 /**
@@ -32,6 +33,7 @@ export function registerGithubWebhook(
   rag: RagService,
   graph?: GraphService | null,
   sweep?: ObjectiveSweepService | null,
+  captureLink?: CaptureLinkSweepService | null,
 ): boolean {
   const secret = process.env.GITHUB_WEBHOOK_SECRET;
   if (!secret) {
@@ -66,6 +68,16 @@ export function registerGithubWebhook(
             .then(s => logger.info('Objective sweep (webhook) done', { ...s }))
             .catch(error => logger.error('Objective sweep (webhook) failed', { error: String(error) }));
         })
+        // Link fresh captures to the project each could advance, react in seconds
+        // to a phone capture (propose-only, dedup'd, one ntfy per run with news).
+        .then(() =>
+          captureLink
+            ?.runSweep()
+            .then(s => logger.info('Capture link sweep (webhook) done', { ...s }))
+            .catch(error =>
+              logger.error('Capture link sweep (webhook) failed', { error: String(error) }),
+            ),
+        )
         .then(() => graph?.build())
         .then(g => {
           if (g) logger.info('Graph rebuild (webhook) complete', g);
