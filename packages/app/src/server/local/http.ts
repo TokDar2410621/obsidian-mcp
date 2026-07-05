@@ -40,6 +40,7 @@ import { scheduleDailyReflection } from '@/services/reflection/reflection-cron';
 import { ObjectiveSweepService } from '@/services/objectives/objective-sweep';
 import { scheduleObjectiveSweep } from '@/services/objectives/objective-sweep-cron';
 import { createNotifier } from '@/services/notify/notifier';
+import { registerCaptureRoute } from '@/server/local/capture-route';
 import { createMemoryStrength } from '@/services/memory/memory-strength';
 import { createBucketStore } from '@/services/storage/bucket-store';
 import { registerStorageTools } from '@/mcp/storage-tool-registrations';
@@ -199,6 +200,10 @@ if (ragService && CERVEAU_API_TOKEN) {
     CERVEAU_API_TOKEN,
   );
 }
+
+// Frictionless capture inbox (POST /capture): phone Share button / bookmarklet
+// drops an idea or URL into 01-raw/inbox, the daily agent distills it later.
+registerCaptureRoute(app, vaultManager);
 
 registerOAuthRoutes(app, {
   clientId: OAUTH_CLIENT_ID,
