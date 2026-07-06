@@ -273,7 +273,8 @@ export class ObjectiveSweepService {
 
   // --- objectives discovery ---------------------------------------------------
 
-  private async loadObjectives(): Promise<ObjectiveNote[]> {
+  /** Public: the morning brief reuses this discovery instead of re-parsing. */
+  async loadObjectives(): Promise<ObjectiveNote[]> {
     const { rag, vault } = this.deps;
     const candidates = new Set<string>();
     for (const chunk of rag.embeddedChunks) {

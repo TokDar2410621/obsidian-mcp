@@ -41,6 +41,8 @@ import { ObjectiveSweepService } from '@/services/objectives/objective-sweep';
 import { scheduleObjectiveSweep } from '@/services/objectives/objective-sweep-cron';
 import { CaptureLinkSweepService } from '@/services/captures/capture-link-sweep';
 import { scheduleCaptureLinkSweep } from '@/services/captures/capture-link-cron';
+import { MorningBriefService } from '@/services/brief/morning-brief';
+import { scheduleMorningBrief } from '@/services/brief/morning-brief-cron';
 import { createNotifier } from '@/services/notify/notifier';
 import { registerCaptureRoute } from '@/server/local/capture-route';
 import { createMemoryStrength } from '@/services/memory/memory-strength';
@@ -172,6 +174,13 @@ const captureLink = ragService
   ? new CaptureLinkSweepService({ rag: ragService, vault: vaultManager, notify: notifier })
   : null;
 
+// Morning brief (the return path to the human): one daily ntfy composing the
+// nearest objective deadline, Darius's #1 priority, and the proposals waiting
+// for him in `08-auto/`. Deterministic, reuses the sweep's objective parsing.
+const morningBrief = objectiveSweep
+  ? new MorningBriefService({ objectives: objectiveSweep, vault: vaultManager, notify: notifier })
+  : null;
+
 // Optional object-storage tools (put-file / get-file) backed by an S3-compatible
 // bucket (e.g. a Railway Bucket). Null unless the bucket env vars are set — keeps
 // binaries (images, PDFs) out of the git vault. Independent of RAG/Anthropic.
@@ -291,6 +300,9 @@ Configure ChatGPT/Claude with:
             .runSweep()
             .then(s => console.log('✓ Capture link sweep (boot)', s))
             .catch(error => console.error('Capture link sweep (boot) failed', error));
+        }
+        if (morningBrief) {
+          scheduleMorningBrief(morningBrief);
         }
         if (graphService) {
           graphService
