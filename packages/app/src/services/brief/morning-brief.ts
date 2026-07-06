@@ -19,12 +19,15 @@ const RECORD_FILE = `${AUTO_DIR}/_brief-matin.md`;
 const PRIORITIES_FILE = `${AUTO_DIR}/_priorities.md`;
 
 /** Files whose fresh bullets count as "waiting for Darius". */
+const INSIGHTS_FILE = `${AUTO_DIR}/_insights.md`;
 const PENDING_FILES = [
+  INSIGHTS_FILE,
   `${AUTO_DIR}/_objectifs-propositions.md`,
   `${AUTO_DIR}/_captures-liens.md`,
   `${AUTO_DIR}/_inbox-darius.md`,
 ];
 const PENDING_LABELS: Record<string, string> = {
+  [INSIGHTS_FILE]: 'insights',
   [`${AUTO_DIR}/_objectifs-propositions.md`]: 'objectifs',
   [`${AUTO_DIR}/_captures-liens.md`]: 'captures reliées',
   [`${AUTO_DIR}/_inbox-darius.md`]: 'inbox cerveau',
@@ -78,6 +81,18 @@ function clean(text: string, max = 140): string {
     .replace(/\s+/g, ' ')
     .trim();
   return t.length > max ? `${t.slice(0, max - 3)}...` : t;
+}
+
+/**
+ * Headline of the newest insight section: the first `- **[type] Title**` bullet
+ * written by the night thinker. Returns null when the file has no insight yet.
+ */
+export function parseLatestInsight(content: string): string | null {
+  const idx = content.indexOf('\n## ');
+  const top = (idx >= 0 ? content.slice(idx) : content).replace(/^\n+/, '');
+  const section = top.split(/\n(?=## )/)[0] ?? '';
+  const m = /^-\s*\*\*\[([a-zé]+)\]\s*(.+?)\*\*/im.exec(section);
+  return m ? clean(`${m[1]} : ${m[2]}`, 120) : null;
 }
 
 /** First numbered item under the "Priorités" heading of `_priorities.md`. */
@@ -142,24 +157,31 @@ export class MorningBriefService {
     // 3. New proposals waiting since the last brief (bullet-count deltas).
     const pendingParts: string[] = [];
     let pendingTotal = 0;
+    let insightLine: string | null = null;
     const newCounts: Record<string, number> = { ...state.bulletCounts };
     for (const file of PENDING_FILES) {
-      let count = 0;
+      let content = '';
       try {
-        count = countBullets(await vault.readFile(file));
+        content = await vault.readFile(file);
       } catch {
-        count = 0;
+        content = '';
       }
+      const count = countBullets(content);
       const prev = state.bulletCounts[file] ?? 0;
       const fresh = Math.max(0, count - prev);
       newCounts[file] = count;
       if (fresh > 0) {
         pendingTotal += fresh;
         pendingParts.push(`${fresh} ${PENDING_LABELS[file] ?? file}`);
+        // A fresh insight is the star of the brief: quote its headline, first.
+        if (file === INSIGHTS_FILE) {
+          const headline = parseLatestInsight(content);
+          if (headline) insightLine = `Insight : ${headline}`;
+        }
       }
     }
 
-    const lines = [deadlineLine, priorityLine].filter(Boolean) as string[];
+    const lines = [insightLine, deadlineLine, priorityLine].filter(Boolean) as string[];
     if (pendingTotal > 0) lines.push(`En attente de toi : ${pendingParts.join(', ')} (08-auto)`);
 
     if (lines.length === 0) {
