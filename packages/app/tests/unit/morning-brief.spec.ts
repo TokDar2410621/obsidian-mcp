@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, beforeAll } from 'vitest';
-import { MorningBriefService, parseTopPriority } from '@/services/brief/morning-brief';
+import { MorningBriefService, parseTopPriority, parseLatestInsight } from '@/services/brief/morning-brief';
 import type { ObjectiveNote } from '@/services/objectives/objective-sweep';
 import type { VaultManager } from '@/services/vault-manager';
 import type { NotifyPusher, NotifyMessage } from '@/services/notify/notifier';
@@ -152,6 +152,26 @@ describe('morning brief', () => {
     expect(result.sent).toBe(true);
     expect(result.pending).toBe(1);
     expect(notify.pushes[0].message).toContain('1 objectifs');
+  });
+
+  it('quotes the newest insight headline as the first line of the brief', async () => {
+    vault.files.set(
+      '08-auto/_insights.md',
+      '# t\n\n## 2026-07-06\n\n- **[croisement] Gridar peut nourrir la page services**\n  Preuve : [[a]] + [[b]].\n',
+    );
+    const result = await service().runBrief();
+
+    expect(result.sent).toBe(true);
+    const msg = notify.pushes[0].message;
+    expect(msg.startsWith('Insight : croisement : Gridar peut nourrir la page services')).toBe(true);
+    expect(msg).toContain('1 insights');
+  });
+
+  it('parseLatestInsight reads only the newest section', () => {
+    const md =
+      '# t\n\n## 2026-07-06\n\n- **[alerte] Nouvelle alerte**\n\n## 2026-07-01\n\n- **[business] Vieille idee**\n';
+    expect(parseLatestInsight(md)).toContain('Nouvelle alerte');
+    expect(parseLatestInsight(md)).not.toContain('Vieille idee');
   });
 
   it('overdue deadline raises priority and is labelled', async () => {
