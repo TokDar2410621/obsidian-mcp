@@ -14,6 +14,7 @@ import { logger } from '@/utils/logger';
  */
 
 const INBOX_DIR = '01-raw/inbox';
+const TACHES_DIR = '09-taches';
 
 const CORS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
@@ -24,6 +25,55 @@ const CORS: Record<string, string> = {
 const day = () => new Date().toISOString().slice(0, 10);
 const hm = () => new Date().toISOString().slice(11, 16);
 const clean = (v: unknown) => String(v ?? '').replace(/\s+/g, ' ').trim();
+
+/**
+ * A capture starting with "fais:" is an ORDER, not a note: it becomes a task
+ * file in `09-taches/` that the local chef-de-chantier worker executes and
+ * verifies (see 09-taches/_HOWTO.md). Default risk is sans-risque (the worker
+ * itself never sends anything external nor touches prod).
+ */
+function slugify(text: string, max = 50): string {
+  const ascii = text.normalize('NFKD').replace(/[̀-ͯ]/g, '');
+  return (
+    ascii
+      .replace(/[^a-zA-Z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .toLowerCase()
+      .slice(0, max) || 'tache'
+  );
+}
+
+function taskFile(demand: string, url: string): { path: string; content: string } {
+  const date = day();
+  const title = demand.length > 70 ? `${demand.slice(0, 70)}...` : demand;
+  const content = [
+    '---',
+    'type: tache',
+    'statut: proposee',
+    'risque: sans-risque',
+    'source: telephone',
+    'cible: vault',
+    `created: ${date}`,
+    '---',
+    '',
+    `# ${title}`,
+    '',
+    '## Demande',
+    demand + (url ? `\nLien joint : ${url}` : ''),
+    '',
+    '## Critères de fini',
+    "- [ ] La demande est satisfaite telle qu'énoncée, en s'appuyant sur les notes du cerveau.",
+    '- [ ] Zéro em-dash ; rien envoyé vers l\'extérieur ; aucun déploiement production.',
+    '',
+    '## Journal',
+    '',
+    '## Résultat',
+    '',
+    '## Contrôle',
+    '',
+  ].join('\n');
+  return { path: `${TACHES_DIR}/${date}-${slugify(demand)}.md`, content };
+}
 
 function inboxHeader(date: string): string {
   return [
@@ -148,6 +198,27 @@ export function registerCaptureRoute(app: Express, vault: VaultManager): boolean
     const text = clean(req.body?.text ?? req.query.text);
     if (!url && !text) {
       res.status(400).json({ error: 'need url or text' });
+      return;
+    }
+
+    // "fais: ..." turns the capture into a task for the chef-de-chantier worker.
+    const order = /^fais\s*:\s*(.+)$/is.exec(text);
+    if (order) {
+      const demand = order[1].trim();
+      const task = taskFile(demand, url);
+      try {
+        await vault.createDirectory(TACHES_DIR, true);
+        if (await vault.fileExists(task.path)) {
+          res.status(200).json({ ok: true, file: task.path, note: 'tache deja creee' });
+          return;
+        }
+        await vault.writeFile(task.path, task.content);
+        logger.info('Capture task created', { file: task.path });
+        res.status(200).json({ ok: true, file: task.path, tache: true });
+      } catch (error) {
+        logger.error('Capture task failed', { error: String(error) });
+        res.status(500).json({ error: 'write failed' });
+      }
       return;
     }
 
