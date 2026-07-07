@@ -185,17 +185,21 @@ describe('morning brief', () => {
     const push = notify.pushes[0];
     expect(push.message).toContain('Question du jour : Tu vises 10k');
     expect(push.message).toContain('pk:');
-    // One-tap "Répondre" button opens the capture page pre-filled with "pk: ".
-    expect(push.actions).toHaveLength(1);
+    // One-tap "Répondre" (capture prefilled with "pk: ") then "Revue" (triage).
+    expect(push.actions).toHaveLength(2);
     expect(push.actions?.[0].label).toBe('Répondre');
     expect(push.actions?.[0].url).toContain('/capture/app?k=tok');
     expect(push.actions?.[0].url).toContain('prefill=pk');
+    expect(push.actions?.[1].label).toBe('Revue');
+    expect(push.actions?.[1].url).toContain('/revue?k=tok');
   });
 
-  it('adds no answer button when there is no fresh question', async () => {
+  it('adds only the Revue button when there is no fresh question', async () => {
     const result = await service().runBrief();
     expect(result.sent).toBe(true);
-    expect(notify.pushes[0].actions).toBeUndefined();
+    // No "Répondre" without a question, but "Revue" is always one tap away.
+    expect(notify.pushes[0].actions).toHaveLength(1);
+    expect(notify.pushes[0].actions?.[0].label).toBe('Revue');
   });
 
   it('ignores a stale question from a previous day', async () => {

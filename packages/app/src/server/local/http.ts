@@ -47,6 +47,7 @@ import { RelanceSweepService } from '@/services/relance/relance-sweep';
 import { scheduleRelanceSweep } from '@/services/relance/relance-cron';
 import { createNotifier } from '@/services/notify/notifier';
 import { registerCaptureRoute } from '@/server/local/capture-route';
+import { registerValidationRoutes } from '@/server/local/validation-route';
 import { createMemoryStrength } from '@/services/memory/memory-strength';
 import { createBucketStore } from '@/services/storage/bucket-store';
 import { registerStorageTools } from '@/mcp/storage-tool-registrations';
@@ -239,6 +240,10 @@ if (ragService && CERVEAU_API_TOKEN) {
 // Frictionless capture inbox (POST /capture): phone Share button / bookmarklet
 // drops an idea or URL into 01-raw/inbox, the daily agent distills it later.
 registerCaptureRoute(app, vaultManager);
+
+// One-tap validate / refuse (GET /valide, /rejette, /approuve, /revue, /prop):
+// the notif buttons flip a task's statut; /revue triages the 08-auto proposals.
+registerValidationRoutes(app, vaultManager);
 
 registerOAuthRoutes(app, {
   clientId: OAUTH_CLIENT_ID,

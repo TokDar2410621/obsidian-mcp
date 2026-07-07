@@ -226,21 +226,25 @@ export class MorningBriefService {
       // One-tap "Répondre" when there is a question: opens the capture page
       // pre-filled with "pk: " so answering is a single dictation.
       const { baseUrl, token } = this.deps;
-      const actions =
-        questionLine && baseUrl && token
-          ? [
-              {
-                label: 'Répondre',
-                url: `${baseUrl.replace(/\/+$/, '')}/capture/app?k=${encodeURIComponent(token)}&prefill=${encodeURIComponent('pk: ')}`,
-              },
-            ]
-          : undefined;
+      const base = baseUrl ? baseUrl.replace(/\/+$/, '') : '';
+      const actions: { label: string; url: string }[] = [];
+      if (base && token) {
+        // One-tap "Répondre" when there is a question (opens capture prefilled),
+        // then "Revue" to triage tasks + proposals. ntfy allows up to 3 actions.
+        if (questionLine) {
+          actions.push({
+            label: 'Répondre',
+            url: `${base}/capture/app?k=${encodeURIComponent(token)}&prefill=${encodeURIComponent('pk: ')}`,
+          });
+        }
+        actions.push({ label: 'Revue', url: `${base}/revue?k=${encodeURIComponent(token)}` });
+      }
       await this.deps.notify.push({
         title: 'Brief du matin',
         message: lines.join('\n'),
         priority: deadlineLine?.includes('DÉPASSÉE') ? 4 : 3,
         tags: ['sunrise'],
-        ...(actions ? { actions } : {}),
+        ...(actions.length ? { actions } : {}),
       });
     }
     await this.appendRecord(lines);
