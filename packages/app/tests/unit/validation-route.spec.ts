@@ -11,6 +11,9 @@ import {
   setTaskStatus,
   dropProposition,
   promoteProposition,
+  newestDailyPath,
+  parseDailyPropositions,
+  collectDailyPropositions,
 } from '@/server/local/validation-route';
 import type { VaultManager } from '@/services/vault-manager';
 import { configureLogger } from '@/utils/logger';
@@ -214,5 +217,94 @@ describe('promoteProposition', () => {
     v.files.set(INSIGHTS, INSIGHTS_MD);
     const { path } = await promoteProposition(v, INSIGHTS, 'nope');
     expect(path).toBeNull();
+  });
+});
+
+// --- daily notes (the orphan channel) ------------------------------------------
+
+const DAILY = '03-daily/2026-07-06.md';
+const DAILY_MD = `---
+type: daily
+---
+
+# 2026-07-06
+
+## Ingestion
+
+Run info, rien a trier.
+
+### ✋ Propositions en attente (à valider)
+
+- [ ] **04-people/laura-panas.md** : créer la fiche contact Laura
+- [ ] **05-projects/cerveau/** : consigner l'instabilité Railway
+- [x] déjà fait, ne pas montrer
+
+## Brief
+
+- point de lecture, pas une proposition a trier
+`;
+
+describe('newestDailyPath', () => {
+  it('picks the latest daily by date, ignores non-daily files', async () => {
+    const v = new FakeVault();
+    v.files.set('03-daily/2026-07-05.md', '# older');
+    v.files.set(DAILY, DAILY_MD);
+    v.files.set('03-daily/notes-libres.md', '# not a daily');
+    expect(await newestDailyPath(v)).toBe(DAILY);
+  });
+
+  it('returns null when there is no daily', async () => {
+    expect(await newestDailyPath(new FakeVault())).toBeNull();
+  });
+});
+
+describe('parseDailyPropositions', () => {
+  it('reads only unchecked items under the proposals section', () => {
+    const props = parseDailyPropositions(DAILY, DAILY_MD);
+    expect(props).toHaveLength(2);
+    expect(props[0].text).toContain('laura-panas');
+    expect(props.some(p => /déjà fait/.test(p.text))).toBe(false); // checked item excluded
+    expect(props.some(p => /point de lecture/.test(p.text))).toBe(false); // other section excluded
+    expect(props.every(p => p.label === 'daily')).toBe(true);
+  });
+});
+
+describe('collectPropositions includes the daily channel', () => {
+  it('merges 08-auto sources and the newest daily proposals', async () => {
+    const v = new FakeVault();
+    v.files.set(INSIGHTS, INSIGHTS_MD);
+    v.files.set(DAILY, DAILY_MD);
+    const props = await collectPropositions(v);
+    expect(props.some(p => p.label === 'insight')).toBe(true);
+    expect(props.filter(p => p.label === 'daily')).toHaveLength(2);
+  });
+
+  it('collectDailyPropositions is empty without a daily', async () => {
+    expect(await collectDailyPropositions(new FakeVault())).toEqual([]);
+  });
+});
+
+describe('daily proposition one-tap', () => {
+  it('drops a daily proposition bullet', async () => {
+    const v = new FakeVault();
+    v.files.set(DAILY, DAILY_MD);
+    const [first] = parseDailyPropositions(DAILY, DAILY_MD);
+    const { removed } = await dropProposition(v, DAILY, first.hash);
+    expect(removed).toContain('laura-panas');
+    expect(v.files.get(DAILY)).not.toContain('créer la fiche contact Laura');
+    expect(v.files.get(DAILY)).toContain("consigner l'instabilité Railway"); // sibling kept
+  });
+
+  it('promotes a daily proposition into a task and removes the bullet', async () => {
+    const v = new FakeVault();
+    v.files.set(DAILY, DAILY_MD);
+    const [first] = parseDailyPropositions(DAILY, DAILY_MD);
+    const { path, text } = await promoteProposition(v, DAILY, first.hash);
+    expect(path).toMatch(/^09-taches\/.*\.md$/);
+    expect(text).toContain('laura-panas');
+    const created = v.files.get(path as string) as string;
+    expect(created).toContain('statut: proposee');
+    expect(created).toContain('carnet du jour');
+    expect(v.files.get(DAILY)).not.toContain('créer la fiche contact Laura');
   });
 });

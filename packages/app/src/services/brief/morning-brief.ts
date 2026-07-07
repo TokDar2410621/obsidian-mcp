@@ -1,6 +1,7 @@
 import type { VaultManager } from '@/services/vault-manager';
 import type { NotifyPusher } from '@/services/notify/notifier';
 import type { ObjectiveNote } from '@/services/objectives/objective-sweep';
+import { collectDailyPropositions } from '@/server/local/validation-route';
 import { logger } from '@/utils/logger';
 
 /**
@@ -196,6 +197,18 @@ export class MorningBriefService {
           if (headline) insightLine = `Insight : ${headline}`;
         }
       }
+    }
+
+    // Orphan channel: proposals the cloud ingestion left in the newest daily
+    // note. Nothing used to deliver these; now they count and reach the Revue.
+    try {
+      const dailyProps = await collectDailyPropositions(vault);
+      if (dailyProps.length > 0) {
+        pendingTotal += dailyProps.length;
+        pendingParts.push(`${dailyProps.length} du carnet du jour`);
+      }
+    } catch {
+      /* daily unavailable: skip */
     }
 
     // The night thinker's grill: today's question, if it wrote a fresh one.

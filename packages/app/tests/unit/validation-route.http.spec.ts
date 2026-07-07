@@ -101,4 +101,22 @@ describe('validation routes (HTTP)', () => {
     expect(r.status).toBe(200);
     expect(vault.files.get('08-auto/_insights.md')).not.toContain('Jetable');
   });
+
+  it('surfaces a daily-note proposal on /revue and can jeter it', async () => {
+    const daily = '03-daily/2026-07-07.md';
+    vault.files.set(
+      daily,
+      '# 2026-07-07\n\n### Propositions en attente (à valider)\n\n- [ ] **04-people/x.md** : orpheline du carnet\n',
+    );
+    const rev = await fetch(`${base}/revue?k=${TOKEN}`);
+    const html = await rev.text();
+    expect(html).toContain('orpheline du carnet');
+    expect(html).toContain(encodeURIComponent(daily));
+
+    const { bulletHash } = await import('@/server/local/validation-route');
+    const h = bulletHash(daily, '[ ] **04-people/x.md** : orpheline du carnet');
+    const r = await fetch(`${base}/prop?k=${TOKEN}&a=jeter&f=${encodeURIComponent(daily)}&h=${h}`);
+    expect(r.status).toBe(200);
+    expect(vault.files.get(daily)).not.toContain('orpheline du carnet');
+  });
 });

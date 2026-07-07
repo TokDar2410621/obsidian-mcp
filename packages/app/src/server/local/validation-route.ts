@@ -23,7 +23,9 @@ import { logger } from '@/utils/logger';
 
 const AUTO_DIR = '08-auto';
 const TACHES_DIR = '09-taches';
+const DAILY_DIR = '03-daily';
 const TASK_PATH_RE = /^09-taches\/[A-Za-z0-9._-]+\.md$/;
+const DAILY_PATH_RE = /^03-daily\/\d{4}-\d{2}-\d{2}\.md$/;
 
 interface PropSource {
   file: string;
@@ -61,9 +63,10 @@ export function bulletHash(file: string, text: string): string {
   return h.toString(36);
 }
 
-/** Strip wikilinks/bold and clamp, so a bullet reads clean on the page. */
+/** Strip a leading checkbox, wikilinks, bold, and clamp, for clean display. */
 export function cleanText(text: string, max = 200): string {
   const t = text
+    .replace(/^\[[ xX]\]\s*/, '')
     .replace(/\[\[([^\]|]*\|)?([^\]]*)\]\]/g, '$2')
     .replace(/\*\*|__|~~/g, '')
     .replace(/\s+/g, ' ')
@@ -222,6 +225,66 @@ export async function listPendingTasks(vault: VaultManager): Promise<PendingTask
   return out;
 }
 
+/** The newest `03-daily/YYYY-MM-DD.md` note, or null. */
+export async function newestDailyPath(vault: VaultManager): Promise<string | null> {
+  let files: string[] = [];
+  try {
+    files = await vault.listFiles(DAILY_DIR);
+  } catch {
+    return null;
+  }
+  const dailies = files
+    .map(f => f.replace(/\\/g, '/'))
+    .filter(f => DAILY_PATH_RE.test(f))
+    .sort();
+  return dailies.length ? dailies[dailies.length - 1] : null;
+}
+
+/**
+ * Unchecked `- [ ]` items under the daily note's "Propositions en attente /
+ * a valider" section. This is the orphan channel: the cloud ingestion writes
+ * proposals here, and nothing used to deliver them. Now they reach /revue.
+ */
+export function parseDailyPropositions(dailyPath: string, content: string, max = 20): Proposition[] {
+  const lines = content.split(/\r?\n/);
+  const items: Proposition[] = [];
+  let inSection = false;
+  let sectionLevel = 0;
+  for (const line of lines) {
+    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (heading) {
+      const level = heading[1].length;
+      const title = heading[2];
+      if (/propositions?.*(en attente|à valider|a valider)|à valider|a valider/i.test(title)) {
+        inSection = true;
+        sectionLevel = level;
+        continue;
+      }
+      if (inSection && level <= sectionLevel) inSection = false;
+      continue;
+    }
+    if (!inSection) continue;
+    const m = /^\s*[-*]\s+\[ \]\s+(.*\S)\s*$/.exec(line);
+    if (!m) continue;
+    const text = `[ ] ${m[1].trim()}`;
+    items.push({ file: dailyPath, label: 'daily', text, hash: bulletHash(dailyPath, text) });
+    if (items.length >= max) break;
+  }
+  return items;
+}
+
+export async function collectDailyPropositions(vault: VaultManager): Promise<Proposition[]> {
+  const daily = await newestDailyPath(vault);
+  if (!daily) return [];
+  let content = '';
+  try {
+    content = await vault.readFile(daily);
+  } catch {
+    return [];
+  }
+  return parseDailyPropositions(daily, content);
+}
+
 export async function collectPropositions(vault: VaultManager): Promise<Proposition[]> {
   const all: Proposition[] = [];
   for (const src of PROP_SOURCES) {
@@ -233,6 +296,8 @@ export async function collectPropositions(vault: VaultManager): Promise<Proposit
     }
     all.push(...parsePropositions(src.file, src.label, content));
   }
+  // The orphan channel: proposals the ingestion left in the newest daily note.
+  all.push(...(await collectDailyPropositions(vault)));
   return all;
 }
 
@@ -264,11 +329,11 @@ export async function promoteProposition(
   hash: string,
 ): Promise<{ path: string | null; text: string | null }> {
   const src = PROP_BY_FILE.get(file);
-  if (!src) return { path: null, text: null };
+  const demandPrefix = src ? src.demandPrefix : 'Donne suite a cette proposition du carnet du jour';
   const content = await vault.readFile(file);
   const text = findBullet(content, file, hash);
   if (text === null) return { path: null, text: null };
-  const demand = `${src.demandPrefix} : ${cleanText(text)}`;
+  const demand = `${demandPrefix} : ${cleanText(text)}`;
   const task = taskFromDemand(demand);
   if (!(await vault.fileExists(task.path))) {
     await vault.createDirectory(TACHES_DIR, true);
@@ -368,7 +433,8 @@ export function registerValidationRoutes(app: Express, vault: VaultManager): boo
     const action = String(req.query.a ?? '');
     const file = String(req.query.f ?? '');
     const hash = String(req.query.h ?? '');
-    if (!PROP_BY_FILE.has(file) || !hash) {
+    const allowed = PROP_BY_FILE.has(file) || DAILY_PATH_RE.test(file);
+    if (!allowed || !hash) {
       res.status(400).type('text/plain').send('bad proposal ref');
       return;
     }

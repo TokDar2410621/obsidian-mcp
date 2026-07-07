@@ -609,9 +609,15 @@ export async function getOrInitializeContent(
   }
 
   const dateStr = match[1];
-  const templateContent = await vault.readFile(config.journalFileTemplate);
-
-  return templateContent.replace(/\{\{date\}\}/g, dateStr);
+  // A missing template file must not sink the whole journal write (this is why
+  // log-journal-entry failed server-side: "Templates/Daily Note.md" absent).
+  // Fall back to a minimal dated header so the entry still lands.
+  try {
+    const templateContent = await vault.readFile(config.journalFileTemplate);
+    return templateContent.replace(/\{\{date\}\}/g, dateStr);
+  } catch {
+    return `# ${dateStr}\n`;
+  }
 }
 
 export async function handleApplyDiffPatch(

@@ -14,6 +14,19 @@ export interface VaultConfig {
   vaultPath: string;
 }
 
+/**
+ * Zero em-dash rule (the vault's rules.json, pattern "—"). The local git
+ * pre-commit hook only guards Darius's own machine; everything the cerveau
+ * writes autonomously (reflection, ingestion, briefs, sweeps) commits here on
+ * the server, where the hook does not exist. This is the teeth at the source:
+ * no markdown the server writes can carry an em-dash. Canonical replacement is
+ * " : " (same as the chef-de-chantier worker), collapsing surrounding spaces.
+ */
+export function stripEmDash(relativePath: string, content: string): string {
+  if (!relativePath.endsWith('.md')) return content;
+  return content.replace(/[ \t]*—[ \t]*/g, ' : ');
+}
+
 export class GitVaultManager implements VaultManager {
   private config: VaultConfig;
 
@@ -252,7 +265,7 @@ export class GitVaultManager implements VaultManager {
       const dir = path.dirname(fullPath);
       await fs.mkdir(dir, { recursive: true });
 
-      await fs.writeFile(fullPath, content, 'utf-8');
+      await fs.writeFile(fullPath, stripEmDash(relativePath, content), 'utf-8');
       await this.commitAndPush(`Update file: ${relativePath}`, [relativePath]);
 
       logger.debug('File written successfully', {
