@@ -1,5 +1,6 @@
 import type { Express, Request, Response } from 'express';
 import type { VaultManager } from '@/services/vault-manager';
+import { recordAnswer } from '@/services/relance/relance-sweep';
 import { logger } from '@/utils/logger';
 
 /**
@@ -201,6 +202,51 @@ export function registerCaptureRoute(app: Express, vault: VaultManager): boolean
       return;
     }
 
+    // "todo: ..." adds a personal obligation to Darius's checklist — the daily
+    // relance sweep asks "pourquoi ?" if it stalls for a day.
+    const todo = /^todo\s*:\s*(.+)$/is.exec(text);
+    if (todo) {
+      const item = todo[1].replace(/\s+/g, ' ').trim();
+      try {
+        await vault.createDirectory(TACHES_DIR, true);
+        const file = `${TACHES_DIR}/_darius.md`;
+        const base = (await vault.fileExists(file))
+          ? await vault.readFile(file)
+          : [
+              '---',
+              'type: note',
+              'tags: [taches, darius]',
+              '---',
+              '',
+              '# Actions de Darius (surveillées par la relance)',
+              '',
+              '> Une case non cochée depuis 1 jour déclenche un « pourquoi ? » le soir.',
+              '> Coche quand c\'est fait ; le préfixe « todo: » du téléphone ajoute ici.',
+              '',
+            ].join('\n');
+        await vault.writeFile(file, `${base.replace(/\s*$/, '')}\n- [ ] ${item} (ajouté: ${day()})\n`);
+        logger.info('Capture todo added', { file });
+        res.status(200).json({ ok: true, file, todo: true });
+      } catch (error) {
+        logger.error('Capture todo failed', { error: String(error) });
+        res.status(500).json({ error: 'write failed' });
+      }
+      return;
+    }
+
+    // "pk: ..." is Darius answering a relance in his own words (voice capture).
+    const pk = /^pk\s*:\s*(.+)$/is.exec(text);
+    if (pk) {
+      try {
+        await recordAnswer(vault, pk[1].replace(/\s+/g, ' ').trim(), 'capture', 'reponse-libre');
+        res.status(200).json({ ok: true, file: `${TACHES_DIR}/_reponses.md`, reponse: true });
+      } catch (error) {
+        logger.error('Capture pk failed', { error: String(error) });
+        res.status(500).json({ error: 'write failed' });
+      }
+      return;
+    }
+
     // "fais: ..." turns the capture into a task for the chef-de-chantier worker.
     const order = /^fais\s*:\s*(.+)$/is.exec(text);
     if (order) {
@@ -243,6 +289,39 @@ export function registerCaptureRoute(app: Express, vault: VaultManager): boolean
     }
   });
 
-  logger.info('Capture route registered at POST /capture');
+  // One-tap answer to a relance (ntfy action buttons open this in the browser).
+  const CAUSES: Record<string, string> = {
+    manque: 'il me manque un truc',
+    peur: 'pas envie ou peur',
+    abandon: 'plus pertinent, abandonner',
+  };
+  app.get('/reponse', async (req: Request, res: Response) => {
+    if ((req.query.k as string | undefined) !== token) {
+      res.status(401).type('text/plain').send('invalid token');
+      return;
+    }
+    const cause = String(req.query.c ?? '');
+    const title = String(req.query.t ?? '').slice(0, 120);
+    const file = String(req.query.f ?? '').slice(0, 200);
+    if (!CAUSES[cause] || !title) {
+      res.status(400).type('text/plain').send('missing cause or title');
+      return;
+    }
+    try {
+      await recordAnswer(vault, title, file, CAUSES[cause]);
+      logger.info('Relance answered', { cause, title });
+      res.type('text/html').send(
+        `<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1">` +
+          `<body style="font-family:system-ui;background:#0b0f14;color:#e8edf3;display:grid;place-items:center;min-height:90vh;text-align:center">` +
+          `<div><p style="font-size:2.4rem;margin:0">✓</p><p><b>Noté : ${CAUSES[cause]}.</b></p>` +
+          `<p style="color:#8b98aa">Le cerveau s'attaque à la cause, pas au symptôme.<br>Tu peux préciser en vocal : capture « pk: ... »</p></div>`,
+      );
+    } catch (error) {
+      logger.error('Relance answer failed', { error: String(error) });
+      res.status(500).type('text/plain').send('write failed');
+    }
+  });
+
+  logger.info('Capture route registered at POST /capture (+ /reponse)');
   return true;
 }

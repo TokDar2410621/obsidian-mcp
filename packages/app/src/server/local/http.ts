@@ -43,6 +43,8 @@ import { CaptureLinkSweepService } from '@/services/captures/capture-link-sweep'
 import { scheduleCaptureLinkSweep } from '@/services/captures/capture-link-cron';
 import { MorningBriefService } from '@/services/brief/morning-brief';
 import { scheduleMorningBrief } from '@/services/brief/morning-brief-cron';
+import { RelanceSweepService } from '@/services/relance/relance-sweep';
+import { scheduleRelanceSweep } from '@/services/relance/relance-cron';
 import { createNotifier } from '@/services/notify/notifier';
 import { registerCaptureRoute } from '@/server/local/capture-route';
 import { createMemoryStrength } from '@/services/memory/memory-strength';
@@ -181,6 +183,15 @@ const morningBrief = objectiveSweep
   ? new MorningBriefService({ objectives: objectiveSweep, vault: vaultManager, notify: notifier })
   : null;
 
+// Relance sweep (asks WHY instead of nagging): anything Darius owes with no
+// progress for a day earns one evening "pourquoi ?" with one-tap answer buttons.
+const relanceSweep = new RelanceSweepService({
+  vault: vaultManager,
+  notify: notifier,
+  baseUrl: BASE_URL,
+  token: process.env.CAPTURE_TOKEN || null,
+});
+
 // Optional object-storage tools (put-file / get-file) backed by an S3-compatible
 // bucket (e.g. a Railway Bucket). Null unless the bucket env vars are set — keeps
 // binaries (images, PDFs) out of the git vault. Independent of RAG/Anthropic.
@@ -304,6 +315,7 @@ Configure ChatGPT/Claude with:
         if (morningBrief) {
           scheduleMorningBrief(morningBrief);
         }
+        scheduleRelanceSweep(relanceSweep);
         if (graphService) {
           graphService
             .build()
