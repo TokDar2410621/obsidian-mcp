@@ -43,6 +43,10 @@ export interface MorningBriefDeps {
   objectives: ObjectiveSource;
   vault: VaultManager;
   notify?: NotifyPusher | null;
+  /** Public server URL, for the one-tap "Répondre" button. */
+  baseUrl?: string;
+  /** Capture token, gating the answer page. Button omitted when absent. */
+  token?: string | null;
 }
 
 export interface BriefResult {
@@ -219,11 +223,24 @@ export class MorningBriefService {
     }
 
     if (this.deps.notify) {
+      // One-tap "Répondre" when there is a question: opens the capture page
+      // pre-filled with "pk: " so answering is a single dictation.
+      const { baseUrl, token } = this.deps;
+      const actions =
+        questionLine && baseUrl && token
+          ? [
+              {
+                label: 'Répondre',
+                url: `${baseUrl.replace(/\/+$/, '')}/capture/app?k=${encodeURIComponent(token)}&prefill=${encodeURIComponent('pk: ')}`,
+              },
+            ]
+          : undefined;
       await this.deps.notify.push({
         title: 'Brief du matin',
         message: lines.join('\n'),
         priority: deadlineLine?.includes('DÉPASSÉE') ? 4 : 3,
         tags: ['sunrise'],
+        ...(actions ? { actions } : {}),
       });
     }
     await this.appendRecord(lines);

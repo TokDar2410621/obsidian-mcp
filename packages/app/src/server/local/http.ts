@@ -180,7 +180,13 @@ const captureLink = ragService
 // nearest objective deadline, Darius's #1 priority, and the proposals waiting
 // for him in `08-auto/`. Deterministic, reuses the sweep's objective parsing.
 const morningBrief = objectiveSweep
-  ? new MorningBriefService({ objectives: objectiveSweep, vault: vaultManager, notify: notifier })
+  ? new MorningBriefService({
+      objectives: objectiveSweep,
+      vault: vaultManager,
+      notify: notifier,
+      baseUrl: BASE_URL,
+      token: process.env.CAPTURE_TOKEN || null,
+    })
   : null;
 
 // Relance sweep (asks WHY instead of nagging): anything Darius owes with no
