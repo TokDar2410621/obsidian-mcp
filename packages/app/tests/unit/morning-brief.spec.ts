@@ -109,6 +109,8 @@ describe('morning brief', () => {
       objectives: { loadObjectives: async () => objectives },
       vault,
       notify,
+      baseUrl: 'https://cerveau.example',
+      token: 'tok',
     });
   }
 
@@ -180,9 +182,20 @@ describe('morning brief', () => {
     );
     const result = await service().runBrief();
     expect(result.sent).toBe(true);
-    const msg = notify.pushes[0].message;
-    expect(msg).toContain('Question du jour : Tu vises 10k');
-    expect(msg).toContain('pk:');
+    const push = notify.pushes[0];
+    expect(push.message).toContain('Question du jour : Tu vises 10k');
+    expect(push.message).toContain('pk:');
+    // One-tap "Répondre" button opens the capture page pre-filled with "pk: ".
+    expect(push.actions).toHaveLength(1);
+    expect(push.actions?.[0].label).toBe('Répondre');
+    expect(push.actions?.[0].url).toContain('/capture/app?k=tok');
+    expect(push.actions?.[0].url).toContain('prefill=pk');
+  });
+
+  it('adds no answer button when there is no fresh question', async () => {
+    const result = await service().runBrief();
+    expect(result.sent).toBe(true);
+    expect(notify.pushes[0].actions).toBeUndefined();
   });
 
   it('ignores a stale question from a previous day', async () => {

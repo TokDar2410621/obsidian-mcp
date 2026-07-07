@@ -145,6 +145,9 @@ function capturePage(token: string): string {
   var TOKEN = ${t};
   var b = document.getElementById('b'), s = document.getElementById('s');
   var t = document.getElementById('t'), u = document.getElementById('u');
+  // Pre-fill (e.g. "pk: " from a "Répondre" button) so answering is one dictation.
+  var pf = new URLSearchParams(location.search).get('prefill');
+  if (pf) { t.value = pf; t.setSelectionRange(pf.length, pf.length); setTimeout(function () { t.focus(); }, 80); }
   b.onclick = function () {
     var text = t.value.trim(), url = u.value.trim();
     if (!text && !url) { s.className = 'ko'; s.textContent = 'Ecris quelque chose.'; return; }
