@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, beforeAll } from 'vitest';
-import { MorningBriefService, parseTopPriority, parseLatestInsight } from '@/services/brief/morning-brief';
+import {
+  MorningBriefService,
+  parseTopPriority,
+  parseLatestInsight,
+  parseLatestQuestion,
+} from '@/services/brief/morning-brief';
 import type { ObjectiveNote } from '@/services/objectives/objective-sweep';
 import type { VaultManager } from '@/services/vault-manager';
 import type { NotifyPusher, NotifyMessage } from '@/services/notify/notifier';
@@ -165,6 +170,35 @@ describe('morning brief', () => {
     const msg = notify.pushes[0].message;
     expect(msg.startsWith('Insight : croisement : Gridar peut nourrir la page services')).toBe(true);
     expect(msg).toContain('1 insights');
+  });
+
+  it('serves the night thinker question of the day when fresh, else stays silent on it', async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    vault.files.set(
+      '08-auto/_question.md',
+      `# t\n\n## ${today}\n\nTu vises 10k mais aucun coup n'est daté cette semaine, lequel prends-tu ? || sinon le mois file\n`,
+    );
+    const result = await service().runBrief();
+    expect(result.sent).toBe(true);
+    const msg = notify.pushes[0].message;
+    expect(msg).toContain('Question du jour : Tu vises 10k');
+    expect(msg).toContain('pk:');
+  });
+
+  it('ignores a stale question from a previous day', async () => {
+    vault.files.set(
+      '08-auto/_question.md',
+      `# t\n\n## 2000-01-01\n\nVieille question ?\n`,
+    );
+    const result = await service().runBrief();
+    expect(result.sent).toBe(true);
+    expect(notify.pushes[0].message).not.toContain('Question du jour');
+  });
+
+  it('parseLatestQuestion reads the newest question line', () => {
+    const md = '# t\n\n## 2026-07-07\n\n> guide\n\nQuelle est la vraie question ? || parce que\n\n## 2026-07-01\n\nVieille ?\n';
+    expect(parseLatestQuestion(md)).toContain('Quelle est la vraie question');
+    expect(parseLatestQuestion(md)).not.toContain('Vieille');
   });
 
   it('parseLatestInsight reads only the newest section', () => {

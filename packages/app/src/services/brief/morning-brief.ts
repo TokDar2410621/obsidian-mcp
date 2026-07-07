@@ -17,6 +17,7 @@ const AUTO_DIR = '08-auto';
 const STATE_FILE = `${AUTO_DIR}/_brief-state.json`;
 const RECORD_FILE = `${AUTO_DIR}/_brief-matin.md`;
 const PRIORITIES_FILE = `${AUTO_DIR}/_priorities.md`;
+const QUESTION_FILE = `${AUTO_DIR}/_question.md`;
 
 /** Files whose fresh bullets count as "waiting for Darius". */
 const INSIGHTS_FILE = `${AUTO_DIR}/_insights.md`;
@@ -93,6 +94,18 @@ export function parseLatestInsight(content: string): string | null {
   const section = top.split(/\n(?=## )/)[0] ?? '';
   const m = /^-\s*\*\*\[([a-zé]+)\]\s*(.+?)\*\*/im.exec(section);
   return m ? clean(`${m[1]} : ${m[2]}`, 120) : null;
+}
+
+/** The newest question written by the night thinker (first line of top section). */
+export function parseLatestQuestion(content: string): string | null {
+  const idx = content.indexOf('\n## ');
+  const top = (idx >= 0 ? content.slice(idx) : content).replace(/^\n+/, '');
+  const section = top.split(/\n(?=## )/)[0] ?? '';
+  for (const line of section.split(/\r?\n/)) {
+    const t = line.trim();
+    if (t && !t.startsWith('#') && !t.startsWith('>')) return clean(t, 160);
+  }
+  return null;
 }
 
 /** First numbered item under the "Priorités" heading of `_priorities.md`. */
@@ -181,7 +194,19 @@ export class MorningBriefService {
       }
     }
 
-    const lines = [insightLine, deadlineLine, priorityLine].filter(Boolean) as string[];
+    // The night thinker's grill: today's question, if it wrote a fresh one.
+    let questionLine: string | null = null;
+    try {
+      const q = await vault.readFile(QUESTION_FILE);
+      if (new RegExp(`^##\\s+${today}\\b`, 'm').test(q)) {
+        const parsed = parseLatestQuestion(q);
+        if (parsed) questionLine = `Question du jour : ${parsed}\nRéponds en vocal : capture « pk: ... »`;
+      }
+    } catch {
+      /* no question file yet */
+    }
+
+    const lines = [questionLine, insightLine, deadlineLine, priorityLine].filter(Boolean) as string[];
     if (pendingTotal > 0) lines.push(`En attente de toi : ${pendingParts.join(', ')} (08-auto)`);
 
     if (lines.length === 0) {
