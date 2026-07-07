@@ -11,6 +11,13 @@ import { logger } from '@/utils/logger';
  *   NTFY_TOKEN  optional Bearer token (self-hosted / protected topics)
  */
 
+export interface NotificationAction {
+  /** Button label shown on the phone (keep it short). */
+  label: string;
+  /** URL opened (GET) when tapped — e.g. a token-gated answer endpoint. */
+  url: string;
+}
+
 export interface Notification {
   title: string;
   message: string;
@@ -18,6 +25,8 @@ export interface Notification {
   priority?: number;
   /** ntfy tags — emoji shortcodes ('brain', 'dart') or plain labels. */
   tags?: string[];
+  /** Up to 3 tap-to-answer buttons (ntfy 'view' actions). */
+  actions?: NotificationAction[];
 }
 
 export interface NotifyPusher {
@@ -52,6 +61,16 @@ export class NtfyNotifier implements NotifyPusher {
           message: notification.message,
           priority: notification.priority ?? 3,
           tags: notification.tags ?? [],
+          ...(notification.actions && notification.actions.length > 0
+            ? {
+                actions: notification.actions.slice(0, 3).map(a => ({
+                  action: 'view',
+                  label: a.label,
+                  url: a.url,
+                  clear: true,
+                })),
+              }
+            : {}),
         }),
       });
       if (!res.ok) logger.warn('ntfy push failed', { status: res.status });
