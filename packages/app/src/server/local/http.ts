@@ -259,7 +259,7 @@ if (ragService) {
 
 const PORT = parseInt(process.env.PORT || '3000');
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`
 ╔═══════════════════════════════════════════════════════════╗
 ║  Obsidian MCP Server (OAuth 2.0 Protected)               ║
@@ -341,3 +341,17 @@ Configure ChatGPT/Claude with:
       .catch((error: any) => console.error('✗ RAG index build failed:', error?.message ?? error));
   }
 });
+
+// Graceful shutdown. Railway stops the old container with SIGTERM on every
+// redeploy. Without this, Node dies via the signal (non-zero), npm reports the
+// start command as failed, and Railway emails "deployment crashed" on EVERY
+// deploy (a false alarm, not a real crash). Exiting 0 makes the replacement a
+// clean shutdown, so the crash emails stop. Also drains in-flight requests.
+const shutdown = (signal: string): void => {
+  console.log(`Graceful shutdown on ${signal}`);
+  server.close(() => process.exit(0));
+  // Safety net if a keep-alive socket holds the server open.
+  setTimeout(() => process.exit(0), 8000).unref();
+};
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
