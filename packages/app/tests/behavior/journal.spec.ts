@@ -191,7 +191,7 @@ describe('Journal logging behaviour', () => {
     expect(await harness.vault.fileExists('Journal/2024-11-20.md')).toBe(true);
   });
 
-  it('fails gracefully when template file does not exist', async () => {
+  it('falls back to a minimal header when the template file is missing', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2024-12-01T10:00:00Z'));
 
@@ -210,9 +210,13 @@ describe('Journal logging behaviour', () => {
       key_topics: ['Testing'],
     });
 
-    expect(result.success).toBe(false);
-    expect(result.text).toContain('Templates/NonExistent.md');
-    expect(result.text).toContain('not found');
+    // A missing template must not sink the whole write (this was the server-side
+    // failure). It falls back to a minimal dated header and the entry still lands.
+    expect(result.success).toBe(true);
+    expect(result.data.journal_path).toBe('Journal/2024-12-01.md');
+    const content = await harness.vault.readFile('Journal/2024-12-01.md');
+    expect(content).toContain('# 2024-12-01');
+    expect(content).toContain('Test entry.');
   });
 
   it('initializes daily note from template when using patch-content on non-existent file', async () => {
