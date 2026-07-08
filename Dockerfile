@@ -4,8 +4,10 @@
 # officielle : celle-ci exécute un fichier compilé qui n'embarque PAS ses
 # dépendances (esbuild --packages=external) et ne copie pas node_modules.
 #
-# Ici on installe les dépendances et on lance le serveur via tsx (code source),
-# ce qui démarre proprement. Testé : le serveur HTTP démarre et écoute.
+# On installe les dépendances, on compile le serveur HTTP en bundle (esbuild),
+# puis on lance node directement dessus. node est alors PID 1 et gère SIGTERM
+# proprement (arrêt gracieux, exit 0), là où npm traduisait le SIGTERM de
+# remplacement en échec, d'où un faux mail "deployment crashed" à chaque deploy.
 
 FROM node:22-slim
 
@@ -20,6 +22,11 @@ COPY . .
 # Installer les dépendances de l'app (inclut tsx) + la racine du workspace
 RUN npm ci --workspace @obsidian-mcp/app --include-workspace-root --no-audit --no-fund
 
+# Compiler le serveur HTTP en un bundle autonome (deps externes resolues depuis
+# node_modules au runtime). Permet de lancer node sans npm ni tsx dans la chaine,
+# donc node recoit le SIGTERM directement et applique l'arret gracieux.
+RUN npm run build:http --workspace @obsidian-mcp/app
+
 ENV LOCAL_VAULT_PATH=/app/vaults/vault-local
 RUN mkdir -p /app/vaults
 
@@ -32,5 +39,6 @@ RUN mkdir -p /app/index
 
 EXPOSE 3000
 
-# Démarre le serveur HTTP (OAuth). Il lit automatiquement le PORT fourni par Railway.
-CMD ["npm", "run", "dev:http"]
+# Démarre le serveur HTTP (OAuth) via node directement (PID 1, gère SIGTERM).
+# Il lit automatiquement le PORT fourni par Railway.
+CMD ["node", "packages/app/dist/http/index.js"]
