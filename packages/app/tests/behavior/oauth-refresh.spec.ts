@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, beforeAll } from 'vitest';
+import { describe, it, expect, beforeEach, beforeAll, vi } from 'vitest';
 import { configureLogger } from '@/utils/logger';
 
 beforeAll(() => {
@@ -29,15 +29,27 @@ describe('OAuth refresh : le connecteur ne meurt plus toutes les heures', () => 
     setAuthStore(createInMemoryAuthStore());
   });
 
-  it('le refresh survit a la suppression du token expire (le bug qui tuait le connecteur)', async () => {
+  it('le refresh survit a l expiration du token (le bug qui tuait le connecteur)', async () => {
     const t = await grant();
-    // validateAccessToken supprime un token expire a la premiere requete :
-    // on simule ce nettoyage, puis le client tente son refresh.
-    await getAuthStore().deleteAccessToken(t.accessToken);
+    // Le scenario reel : le token expire, une requete arrive (validate), puis
+    // le client tente son refresh. Avant le fix : validate supprimait le token
+    // ET, par cascade du store, le refresh token : mort du connecteur.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(Date.now() + t.expiresIn * 1000 + 60_000);
+      expect(await validateAccessToken(t.accessToken)).toBe(false); // expire
+      const r = await refreshAccessToken(t.refreshToken);
+      expect(r).not.toBeNull(); // le refresh token a survecu
+      expect(await validateAccessToken(r!.accessToken)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
-    const r = await refreshAccessToken(t.refreshToken);
-    expect(r).not.toBeNull(); // avant le fix : null, refresh token detruit
-    expect(await validateAccessToken(r!.accessToken)).toBe(true);
+  it('la suppression explicite d un token revoque bien son refresh (comportement voulu)', async () => {
+    const t = await grant();
+    await getAuthStore().deleteAccessToken(t.accessToken); // revocation volontaire
+    expect(await refreshAccessToken(t.refreshToken)).toBeNull();
   });
 
   it('le refresh nominal marche toujours', async () => {
