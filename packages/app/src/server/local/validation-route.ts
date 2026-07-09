@@ -492,17 +492,17 @@ export function registerValidationRoutes(
     try {
       const [tasks, allProps] = await Promise.all([listPendingTasks(vault), collectPropositions(vault)]);
 
-      // Metacognition filter: never show again what Darius already refused,
-      // even reformulated (semantic mask, one batched embedding call).
+      // Metacognition filter: never show again what is already SETTLED
+      // (refused, validated, promoted), even reformulated. One batched call.
       let props = allProps;
       let hiddenCount = 0;
       if (registry && allProps.length > 0) {
         try {
-          const mask = await registry.refusedMask(allProps.map(p => cleanText(p.text)));
+          const mask = await registry.settledMask(allProps.map(p => cleanText(p.text)));
           props = allProps.filter((_, i) => !mask[i]);
           hiddenCount = allProps.length - props.length;
         } catch (error) {
-          logger.warn('Refused mask failed, showing all proposals', { error: String(error) });
+          logger.warn('Settled mask failed, showing all proposals', { error: String(error) });
         }
       }
 
@@ -541,7 +541,7 @@ export function registerValidationRoutes(
         `<h2>Propositions (${props.length})</h2>` +
         (propCards || '<p class="empty">Aucune proposition fraîche.</p>') +
         (hiddenCount > 0
-          ? `<p class="sub" style="margin-top:10px">${hiddenCount} proposition(s) déjà refusée(s), masquée(s).</p>`
+          ? `<p class="sub" style="margin-top:10px">${hiddenCount} proposition(s) déjà réglée(s), masquée(s).</p>`
           : '');
 
       res.type('text/html').send(page('Revue du cerveau', body));

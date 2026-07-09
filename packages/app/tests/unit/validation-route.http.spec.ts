@@ -135,7 +135,7 @@ describe('validation routes (HTTP)', () => {
       const rev = await fetch(`${b2}/revue?k=${TOKEN}`);
       const html = await rev.text();
       expect(html).not.toContain('proposition repetitive du jour');
-      expect(html).toContain('déjà refusée');
+      expect(html).toContain('déjà réglée');
     } finally {
       srv2.close();
     }

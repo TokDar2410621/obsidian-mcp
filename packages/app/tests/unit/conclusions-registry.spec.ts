@@ -112,6 +112,21 @@ describe('isRefused / findSimilar', () => {
   });
 });
 
+describe('settledMask (le juge unique du "déjà réglé")', () => {
+  it('masque le validé et le promu autant que le refusé, mais pas le propose', async () => {
+    const { reg } = make();
+    await reg.record({ text: 'creer la fiche laura', source: 'daily', status: 'valide' });
+    await reg.record({ text: 'surveiller railway', source: 'daily', status: 'promu' });
+    await reg.record({ text: 'envoyer email marchand 289', source: 'daily', status: 'propose' });
+    const mask = await reg.settledMask([
+      'fiche laura : creer', // reformulation d'un valide
+      'surveiller railway', // promu
+      'envoyer email marchand 289', // seulement propose : reste visible
+    ]);
+    expect(mask).toEqual([true, true, false]);
+  });
+});
+
 describe('refusedMask (batched)', () => {
   it('masks refused texts, exact and semantic, leaves the rest', async () => {
     const { reg } = make();

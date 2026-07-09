@@ -176,14 +176,19 @@ export class ConclusionsRegistry {
   }
 
   /**
-   * Batched refusal mask for a list of texts (ONE embedding call for all
-   * queries). mask[k] = true when texts[k] matches a refused conclusion.
+   * Batched mask over statuses (ONE embedding call for all queries).
+   * mask[k] = true when texts[k] matches a conclusion whose status is in
+   * `statuses`. Exact match first, then semantic (cosine >= threshold).
    */
-  async refusedMask(texts: string[], threshold = DUP_THRESHOLD): Promise<boolean[]> {
+  private async statusMask(
+    texts: string[],
+    statuses: ConclusionStatus[],
+    threshold = DUP_THRESHOLD,
+  ): Promise<boolean[]> {
     const data = await this.load();
-    const refused = data.items.filter(i => i.status === 'refuse' || i.status === 'rejete');
-    if (refused.length === 0 || texts.length === 0) return texts.map(() => false);
-    const exact = new Set(refused.map(i => normText(i.text).toLowerCase()));
+    const pool = data.items.filter(i => statuses.includes(i.status));
+    if (pool.length === 0 || texts.length === 0) return texts.map(() => false);
+    const exact = new Set(pool.map(i => normText(i.text).toLowerCase()));
     const mask = texts.map(t => exact.has(normText(t).toLowerCase()));
     if (!this.embed) return mask;
     await this.ensureVectors();
@@ -195,7 +200,7 @@ export class ConclusionsRegistry {
     }
     texts.forEach((_, k) => {
       if (mask[k] || !qvecs[k]) return;
-      for (const item of refused) {
+      for (const item of pool) {
         const v = this.vectors.get(item.id);
         if (v && dot(qvecs[k], v) >= threshold) {
           mask[k] = true;
@@ -204,6 +209,21 @@ export class ConclusionsRegistry {
       }
     });
     return mask;
+  }
+
+  /** mask[k] = true when texts[k] matches a REFUSED conclusion. */
+  async refusedMask(texts: string[], threshold = DUP_THRESHOLD): Promise<boolean[]> {
+    return this.statusMask(texts, ['refuse', 'rejete'], threshold);
+  }
+
+  /**
+   * mask[k] = true when texts[k] matches ANY settled conclusion (refused,
+   * rejected, validated or promoted). A settled matter never counts as
+   * "pending" again, anywhere: this is what stops the brief and /revue from
+   * re-serving work that was already done but whose checkbox was never ticked.
+   */
+  async settledMask(texts: string[], threshold = DUP_THRESHOLD): Promise<boolean[]> {
+    return this.statusMask(texts, ['refuse', 'rejete', 'valide', 'promu'], threshold);
   }
 
   /** Recently refused texts (for prompts / displays). */

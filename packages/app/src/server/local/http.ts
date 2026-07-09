@@ -211,6 +211,7 @@ const morningBrief = objectiveSweep
       notify: notifier,
       baseUrl: BASE_URL,
       token: process.env.CAPTURE_TOKEN || null,
+      conclusions: conclusionsRegistry,
     })
   : null;
 
