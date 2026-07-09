@@ -18,8 +18,16 @@ const EXCERPT_CHARS = 300;
 const isExcluded = (file: string): boolean =>
   file === '00-synapses.md' || file.startsWith('_templates/');
 
+// Self-healing of empty extractions (see doBuild): bounded so a webhook-heavy
+// day heals the backlog gradually instead of spiking the LLM bill.
+const MIN_EXTRACTABLE_CHARS = 300; // below this, an empty extraction is legitimate
+const MAX_EMPTY_RETRIES_PER_NOTE = 3; // then accept the emptiness as real
+const MAX_EMPTY_RETRIES_PER_BUILD = 20;
+
 interface CachedExtraction {
   hash: string;
+  /** Times an EMPTY extraction was retried (LLM hiccups must not be permanent). */
+  emptyRetries?: number;
   extraction: GraphExtraction;
 }
 interface PersistedGraph {
@@ -84,16 +92,32 @@ export class GraphService {
     const notes = this.noteTexts();
 
     let extracted = 0;
+    let healed = 0;
     const nextCache = new Map<string, CachedExtraction>();
     for (const [file, text] of notes) {
       const hash = sha256(text);
       const cached = this.cache.get(file);
-      if (cached && cached.hash === hash) {
+      // Self-healing: an LLM hiccup (rate limit, malformed JSON) yields an
+      // EMPTY extraction, and caching it forever leaves the note invisible in
+      // the graph (688/803 notes were blind). Retry empty extractions of
+      // substantive notes, bounded per build and per note, so the backlog
+      // heals over successive builds without an API cost spike.
+      const isEmptyCached =
+        cached &&
+        cached.hash === hash &&
+        cached.extraction.entities.length === 0 &&
+        text.length >= MIN_EXTRACTABLE_CHARS &&
+        (cached.emptyRetries ?? 0) < MAX_EMPTY_RETRIES_PER_NOTE;
+      const retryThisBuild = isEmptyCached && healed < MAX_EMPTY_RETRIES_PER_BUILD;
+      if (cached && cached.hash === hash && !retryThisBuild) {
         nextCache.set(file, cached);
       } else {
         const extraction = await this.llm.extract(text);
-        nextCache.set(file, { hash, extraction });
+        const emptyRetries =
+          extraction.entities.length === 0 ? (cached?.emptyRetries ?? 0) + 1 : undefined;
+        nextCache.set(file, { hash, extraction, ...(emptyRetries ? { emptyRetries } : {}) });
         extracted++;
+        if (retryThisBuild) healed++;
       }
     }
     this.cache = nextCache;

@@ -156,3 +156,58 @@ describe('GraphRAG — service', () => {
     expect(res.data.hubs[0].name).toBe('Redis');
   });
 });
+
+describe('GraphRAG — self-healing of empty extractions', () => {
+  /** Fails N times (returns empty), then succeeds — an LLM hiccup. */
+  class FlakyGraphLlm extends FakeGraphLlm {
+    constructor(private failures: number) {
+      super();
+    }
+    async extract(text: string): Promise<GraphExtraction> {
+      this.extractCalls++;
+      if (this.failures > 0) {
+        this.failures--;
+        return { entities: [], relations: [] };
+      }
+      return { entities: ['Redis'], relations: [] };
+    }
+  }
+
+  const BIG = 'Redis '.repeat(80); // > MIN_EXTRACTABLE_CHARS, deserves entities
+
+  it('retries an empty extraction on the next build instead of caching it forever', async () => {
+    const rag = await buildRag({ 'note.md': BIG });
+    const llm = new FlakyGraphLlm(1); // first build hiccups
+    const graph = new GraphService({ rag, llm, graphFile: '/unused', persist: false });
+
+    const first = await graph.build();
+    expect(first.entities).toBe(0); // the hiccup left the note blind
+    const second = await graph.build();
+    expect(second.extracted).toBe(1); // retried, not served from cache
+    expect(second.entities).toBe(1); // healed
+  });
+
+  it('gives up after bounded retries (a genuinely empty note stays cached)', async () => {
+    const rag = await buildRag({ 'note.md': BIG });
+    const llm = new FlakyGraphLlm(Number.MAX_SAFE_INTEGER); // always empty
+    const graph = new GraphService({ rag, llm, graphFile: '/unused', persist: false });
+
+    await graph.build();
+    await graph.build();
+    await graph.build();
+    await graph.build();
+    const calls = llm.extractCalls;
+    await graph.build(); // beyond MAX_EMPTY_RETRIES_PER_NOTE: no more calls
+    expect(llm.extractCalls).toBe(calls);
+  });
+
+  it('never retries short notes (an empty extraction there is legitimate)', async () => {
+    const rag = await buildRag({ 'court.md': 'Rien.' });
+    const llm = new FlakyGraphLlm(Number.MAX_SAFE_INTEGER);
+    const graph = new GraphService({ rag, llm, graphFile: '/unused', persist: false });
+    await graph.build();
+    const calls = llm.extractCalls;
+    await graph.build();
+    expect(llm.extractCalls).toBe(calls); // cached empty, no retry
+  });
+});
