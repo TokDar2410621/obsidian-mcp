@@ -20,9 +20,12 @@ const STATE_FILE = `${AUTO_DIR}/_brief-state.json`;
 const RECORD_FILE = `${AUTO_DIR}/_brief-matin.md`;
 const PRIORITIES_FILE = `${AUTO_DIR}/_priorities.md`;
 const QUESTION_FILE = `${AUTO_DIR}/_question.md`;
-/** Heartbeat written by the PC2 night thinker at every run (even silent ones). */
+/** Heartbeats written by the PC2 workers at every run (even silent ones). */
 const HEARTBEAT_FILE = `${AUTO_DIR}/_veille-workers.json`;
-const HEARTBEAT_STALE_MS = 26 * 3600 * 1000; // one missed nightly run + margin
+const WATCHED_WORKERS: Array<{ key: string; label: string; staleMs: number }> = [
+  { key: 'penseur-de-nuit', label: 'Penseur de nuit', staleMs: 26 * 3600 * 1000 },
+  { key: 'chef-de-chantier', label: 'Chef de chantier', staleMs: 8 * 3600 * 1000 },
+];
 
 /** Files whose fresh bullets count as "waiting for Darius". */
 const INSIGHTS_FILE = `${AUTO_DIR}/_insights.md`;
@@ -240,39 +243,37 @@ export class MorningBriefService {
       /* no question file yet */
     }
 
-    // Watchdog: a silent failure of the night thinker must become a signal.
-    // The worker writes a heartbeat at every run (even a "nothing worthy"
-    // night); a stale/missing heartbeat while the thinker is known to exist
-    // (insights file present) means the PC2 pipeline is down, and the human
-    // must hear it instead of a quietly thinner brief.
-    let watchdogLine: string | null = null;
+    // Watchdog: a silent failure of a PC2 worker must become a signal, never a
+    // quietly thinner brief (observed: the whole PC2 layer down 24h, unseen).
+    // Each worker heartbeats into the vault; a stale beat raises ONE line here.
+    const watchdogLines: string[] = [];
     try {
-      const insightsExist = await vault.fileExists(INSIGHTS_FILE);
-      if (insightsExist) {
-        let stale = true;
-        let lastSeen = 'jamais';
-        try {
-          const hb = JSON.parse(await vault.readFile(HEARTBEAT_FILE)) as Record<
-            string,
-            { last?: string }
-          >;
-          const last = hb['penseur-de-nuit']?.last;
-          if (last) {
-            lastSeen = last;
-            stale = Date.now() - Date.parse(last) > HEARTBEAT_STALE_MS;
-          }
-        } catch {
-          /* no heartbeat file: stale stays true */
-        }
+      let hb: Record<string, { last?: string }> = {};
+      try {
+        hb = JSON.parse(await vault.readFile(HEARTBEAT_FILE));
+      } catch {
+        /* no heartbeat file yet */
+      }
+      for (const w of WATCHED_WORKERS) {
+        const last = hb[w.key]?.last;
+        // Bootstrap-safe: before any heartbeat exists, only the night thinker
+        // alerts (its output file proves it is supposed to run).
+        const known =
+          last !== undefined ||
+          (w.key === 'penseur-de-nuit' && (await vault.fileExists(INSIGHTS_FILE)));
+        if (!known) continue;
+        const stale = !last || Date.now() - Date.parse(last) > w.staleMs;
         if (stale) {
-          watchdogLine = `⚠️ Penseur de nuit : aucun battement récent (dernier : ${lastSeen}). Vérifier PC2.`;
+          watchdogLines.push(
+            `⚠️ ${w.label} : aucun battement récent (dernier : ${last ?? 'jamais'}). Vérifier PC2.`,
+          );
         }
       }
     } catch {
       /* watchdog must never break the brief */
     }
 
-    const lines = [questionLine, insightLine, watchdogLine, deadlineLine, priorityLine].filter(
+    const lines = [questionLine, insightLine, ...watchdogLines, deadlineLine, priorityLine].filter(
       Boolean,
     ) as string[];
     if (pendingTotal > 0) lines.push(`En attente de toi : ${pendingParts.join(', ')} (08-auto)`);
