@@ -146,6 +146,20 @@ if (learning && ragService) {
 const memoryStore = ragService ? createMemoryStrength() : null;
 if (ragService && memoryStore) {
   ragService.setRecallListener(files => memoryStore.recordRecall(files));
+  // Motivated recall: strong traces surface first (forgetting shapes recall).
+  ragService.setStrengthProvider(file => memoryStore.strengthOf(file));
+}
+if (ragService) {
+  // The motivational compass: retrieval is biased toward Darius's explicit
+  // priorities and his documented blocking patterns (fears), like a human
+  // whose active goals prime what comes to mind. Re-read at each reindex.
+  ragService.setMotivationProvider(async () => {
+    const [priorities, fears] = await Promise.all([
+      vaultManager.readFile('08-auto/_priorities.md').catch(() => ''),
+      vaultManager.readFile('04-systemes/regles/blocage-demander-pourquoi.md').catch(() => ''),
+    ]);
+    return [priorities, fears].filter(Boolean).join('\n\n');
+  });
 }
 
 // Conclusions registry (metacognition): the cerveau's memory of its OWN

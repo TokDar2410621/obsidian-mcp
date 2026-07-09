@@ -28,7 +28,7 @@ interface MemoryData {
   born: string; // when this store started observing (gates archive proposals)
 }
 
-const RECALL_BOOST = 0.5;
+const RECALL_APPROACH = 0.25; // fraction of the remaining gap to MAX closed per recall
 const MAX_STRENGTH = 2;
 const EPISODIC_DAILY_DECAY = 0.977; // half-life ≈ 30 days
 const SEMANTIC_DAILY_DECAY = 0.998; // half-life ≈ 1 year (distilled knowledge endures)
@@ -64,7 +64,12 @@ export class MemoryStrengthStore {
     if (unique.length === 0) return;
     for (const f of unique) {
       const t = this.data.files[f] ?? { s: 1, r: 0, last: today, born: today };
-      t.s = round3(Math.min(MAX_STRENGTH, t.s + RECALL_BOOST));
+      // Diminishing boost: a flat +0.5 capped at 2 crushed the whole store
+      // into the 1.95-2.0 band (no discrimination left, diagnostic gap #7).
+      // Each recall closes a fixed fraction of the remaining gap to the cap,
+      // so strength approaches MAX asymptotically and frequently-recalled
+      // notes keep separating from occasional ones forever.
+      t.s = round3(t.s + (MAX_STRENGTH - t.s) * RECALL_APPROACH);
       t.r += 1;
       t.last = today;
       this.data.files[f] = t;
