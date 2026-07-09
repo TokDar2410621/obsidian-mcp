@@ -142,7 +142,11 @@ export async function validateAccessToken(token: string): Promise<boolean> {
   }
 
   if (Date.now() > tokenData.expiresAt) {
-    await store.deleteAccessToken(token);
+    // Do NOT delete here: deleteAccessToken cascades onto the refresh token
+    // (both stores), so cleaning an expired token used to destroy the very
+    // refresh token the client was about to use. That cascade was the root of
+    // the hourly "requires re-authorization" loop. The stale row is reclaimed
+    // by the next successful refresh (its deleteAccessToken call).
     return false;
   }
 
