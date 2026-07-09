@@ -3,7 +3,10 @@ import { generateSecureToken, verifyCodeChallenge } from './pkce.js';
 import { logger } from '@/utils/logger';
 
 const AUTH_CODE_EXPIRY = 10 * 60 * 1000;
-const ACCESS_TOKEN_EXPIRY = 60 * 60 * 1000;
+// Personal single-user server: a short-lived access token buys no real security
+// here and killed the connector hourly (see refreshAccessToken). 30 days by
+// default, overridable via ACCESS_TOKEN_EXPIRY_MS.
+const ACCESS_TOKEN_EXPIRY = Number(process.env.ACCESS_TOKEN_EXPIRY_MS || 30 * 24 * 60 * 60 * 1000);
 
 export async function createAuthorizationCode(
   codeChallenge: string,
@@ -95,13 +98,19 @@ export async function refreshAccessToken(refreshToken: string): Promise<{
     return null;
   }
 
+  // The old access token may be GONE: validateAccessToken deletes it at the
+  // first request after expiry. Requiring it here made every refresh that
+  // arrived after that moment destroy the refresh token too, killing the
+  // connector every hour (the "requires re-authorization" loop). The refresh
+  // token itself is the proof of grant: tolerate a missing old access token.
   const oldTokenData = await store.getAccessToken(refreshData.accessToken);
-  if (!oldTokenData) {
-    await store.deleteRefreshToken(refreshToken);
-    return null;
+  if (oldTokenData) {
+    await store.deleteAccessToken(refreshData.accessToken);
   }
-
-  await store.deleteAccessToken(refreshData.accessToken);
+  // No strict rotation on purpose: if the client loses the response and
+  // retries with the same refresh token, a deleted token would kill the
+  // connector (the exact failure this fix removes). Single-user personal
+  // server: availability wins.
 
   const newAccessToken = generateSecureToken();
   const newRefreshToken = generateSecureToken();
@@ -112,7 +121,7 @@ export async function refreshAccessToken(refreshToken: string): Promise<{
     refreshToken: newRefreshToken,
     createdAt: now,
     expiresAt: now + ACCESS_TOKEN_EXPIRY,
-    scope: oldTokenData.scope,
+    scope: oldTokenData?.scope ?? 'vault:read vault:write',
   };
 
   await store.setAccessToken(tokenData);
