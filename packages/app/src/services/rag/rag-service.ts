@@ -23,6 +23,9 @@ const MAX_TOP_K = 30;
 const MAX_CONTEXT_CHARS = 12000; // budget for ask-cerveau prompt context
 const EXCERPT_CHARS = 240;
 const RERANK_POOL = 24; // shortlist size handed to the reranker
+// Motivated recall nudges (bounded: they re-sort the pool, never invent hits).
+const MOTIVATION_ALPHA = 0.25; // weight of cosine(chunk, priorities+fears)
+const STRENGTH_BETA = 0.15; // weight of the memory-strength trace (0..2 → 0..1)
 
 export interface RagServiceOptions {
   reader: VaultReader;
@@ -95,6 +98,13 @@ export class RagService {
   private bm25: BM25Index | null = null;
   private learningsProvider: (() => Promise<string>) | null = null;
   private recallListener: ((files: string[]) => void) | null = null;
+  // Motivated recall (diagnostic pensee-humaine, gaps #3/#7): a human's recall
+  // is biased by active goals and fears, and by memory strength. The motivation
+  // text (priorities + known blockers) is embedded once and cached until the
+  // next reindex; the strength provider reads the forgetting-curve store.
+  private motivationProvider: (() => Promise<string>) | null = null;
+  private motivationVec: Float32Array | null = null;
+  private strengthProvider: ((file: string) => number) | null = null;
   private loaded = false;
   private loadingPromise: Promise<void> | null = null;
   private refreshPromise: Promise<RefreshResult> | null = null;
@@ -141,6 +151,35 @@ export class RagService {
    */
   setRecallListener(fn: (files: string[]) => void): void {
     this.recallListener = fn;
+  }
+
+  /**
+   * Inject the motivational compass (Darius's priorities + known fears). Read
+   * lazily, embedded once, invalidated at each reindex so an edited
+   * `_priorities.md` re-biases recall on the next retrieval.
+   */
+  setMotivationProvider(fn: () => Promise<string>): void {
+    this.motivationProvider = fn;
+    this.motivationVec = null;
+  }
+
+  /** Inject memory strength (forgetting curve) so recall favours strong traces. */
+  setStrengthProvider(fn: (file: string) => number): void {
+    this.strengthProvider = fn;
+  }
+
+  private async motivationVector(): Promise<Float32Array | null> {
+    if (!this.motivationProvider) return null;
+    if (this.motivationVec) return this.motivationVec;
+    const text = (await this.motivationProvider().catch(() => '')).trim();
+    if (!text) return null;
+    try {
+      const [raw] = await this.embedder.embed([text.slice(0, 4000)]);
+      this.motivationVec = normalize(raw);
+    } catch {
+      return null;
+    }
+    return this.motivationVec;
   }
 
   private buildLexicalIndex(): void {
@@ -218,6 +257,9 @@ export class RagService {
 
     if (this.persist) await this.save();
 
+    // Priorities may have changed in this push: re-embed motivation lazily.
+    this.motivationVec = null;
+
     return { files: files.length, chunks: this.chunks.length, embedded: toEmbed.length };
   }
 
@@ -226,6 +268,13 @@ export class RagService {
     try {
       await this.ensureReady();
       const hits = await this.retrieve(args.query, args);
+      // A search is also a recall: reinforce the traces of what surfaced
+      // (humans consolidate what they retrieve, not only what they cite).
+      try {
+        this.recallListener?.([...new Set(hits.slice(0, 8).map(h => h.path))]);
+      } catch {
+        /* the memory signal must never break a search */
+      }
       return ok({
         results: hits.map(h => ({
           path: h.path,
@@ -326,6 +375,29 @@ export class RagService {
         );
         ranked = rrf([denseRanked, bm25Ranked]);
       }
+    }
+
+    // Motivated recall: re-sort the head pool so chunks close to Darius's
+    // active priorities/fears (motivation vector) and strong memory traces
+    // speak louder. The semantic order stays the base signal (1 - pos/n);
+    // motivation and strength are bounded nudges, not overrides.
+    const motivation = await this.motivationVector();
+    if ((motivation || this.strengthProvider) && ranked.length > 1) {
+      const pool = ranked.slice(0, RERANK_POOL);
+      const scored = pool.map((idx, pos) => {
+        let s = 1 - pos / pool.length;
+        if (motivation) s += MOTIVATION_ALPHA * dot(motivation, this.chunks[idx].embedding);
+        if (this.strengthProvider) {
+          try {
+            s += (STRENGTH_BETA * Math.min(this.strengthProvider(this.chunks[idx].file), 2)) / 2;
+          } catch {
+            /* strength must never break retrieval */
+          }
+        }
+        return { idx, s };
+      });
+      scored.sort((a, b) => b.s - a.s);
+      ranked = [...scored.map(x => x.idx), ...ranked.slice(pool.length)];
     }
 
     // Optional rerank over the fused shortlist (cross-encoder style).
