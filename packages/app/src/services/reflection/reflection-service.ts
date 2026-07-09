@@ -31,6 +31,12 @@ const INBOX_FILE = `${AUTO_DIR}/_inbox-darius.md`;
 const PRIORITIES_FILE = `${AUTO_DIR}/_priorities.md`; // optional compass, user-edited
 const SELF_FILE = `${AUTO_DIR}/_self.md`; // the self-model the mind maintains
 const MEMOIRE_MD = `${AUTO_DIR}/_memoire.md`; // memory-strength view + forgetting proposals
+// Shared workspace of ALL thinkers (this reflection, the PC2 night thinker, the
+// war-room). Each writes its dated conclusions here AND reads the others before
+// thinking — without it the thinkers ignore each other (diagnostic gap #2).
+const BLACKBOARD_FILE = `${AUTO_DIR}/_blackboard.md`;
+const MAX_BLACKBOARD_SECTIONS = 30;
+const BLACKBOARD_EXCERPT = 2500;
 
 const MAX_THREADS = 3; // a mind only holds so much at once
 const MAX_THOUGHTS = 8; // memory per thread (train of thought), bounded
@@ -96,6 +102,8 @@ export interface ReflectionDeps {
   memory: MemoryStrengthStore | null;
   /** Provider for `_learnings.md` (explicit preferences feeding the self-model). */
   learnings: (() => Promise<string>) | null;
+  /** Conclusions registry (metacognition): never re-crystallise what Darius refused. */
+  conclusions?: import('@/services/conclusions/conclusions-registry').ConclusionsRegistry | null;
 }
 
 /**
@@ -198,6 +206,11 @@ export class ReflectionService {
     ]);
     const priorities = trunc(await this.readOptional(PRIORITIES_FILE), PRIOR_EXCERPT);
     const selfModel = trunc(stripFrontmatter(await this.readOptional(SELF_FILE)).trim(), SELF_EXCERPT);
+    // The other thinkers' recent conclusions (night thinker, war-room...).
+    const blackboard = trunc(
+      stripFrontmatter(await this.readOptional(BLACKBOARD_FILE)).trim(),
+      BLACKBOARD_EXCERPT,
+    );
 
     // 4. RUMINATE — develop threads, spawn/fade, ripen; maybe place a bet. One LLM call.
     const { state, bet } = await this.ruminate(llm, prior, {
@@ -207,6 +220,7 @@ export class ReflectionService {
       coherence: arr(coherence, 'issues'),
       priorities,
       selfModel,
+      blackboard,
       lessons,
       date,
     });
@@ -219,14 +233,27 @@ export class ReflectionService {
     }
 
     // 6. CRYSTALLISE — a ripe thread produces a real artefact (create/improve).
+    // Metacognition gate first: a thread whose conclusion Darius already
+    // refused is dropped, never re-crystallised (even reformulated).
     const ripe = state.threads
       .filter(t => t.status === 'ripe')
       .sort((a, b) => b.maturity * b.salience - a.maturity * a.salience);
     const crystallized: Crystallized[] = [];
     for (const thread of ripe.slice(0, this.maxCrystallize())) {
       try {
-        crystallized.push(await this.crystallise(thread, date));
+        if (this.deps.conclusions && (await this.deps.conclusions.isRefused(`${thread.title} : ${thread.why}`))) {
+          thread.status = 'faded';
+          logger.info('Reflection: thread dropped (conclusion already refused by Darius)', {
+            thread: thread.id,
+          });
+          continue;
+        }
+        const c = await this.crystallise(thread, date);
+        crystallized.push(c);
         thread.status = 'crystallized'; // dropped at next load
+        this.deps.conclusions
+          ?.record({ text: `${thread.title} : ${thread.target}`, source: 'reflexion', status: 'propose' })
+          .catch(() => undefined);
       } catch (error) {
         logger.error('Reflection: crystallisation failed', {
           thread: thread.id,
@@ -265,6 +292,7 @@ export class ReflectionService {
       if (bookOk) await saveBook(vault, book);
       if (forget.memoireMd) await vault.writeFile(MEMOIRE_MD, forget.memoireMd);
       await this.appendLog(date, state, crystallized);
+      await this.appendBlackboard(date, state, crystallized);
       await vault.writeFile(STATE_JSON, stateJson); // last: the source of truth
     } catch (error) {
       logger.error('Reflection: write phase failed (previous state preserved)', {
@@ -286,6 +314,46 @@ export class ReflectionService {
   }
 
   // --- steps ---------------------------------------------------------------
+
+  /**
+   * Deposit this cycle's conclusions on the shared thinkers' blackboard (same
+   * file and section format as the PC2 night thinker writes). Newest first,
+   * capped, so every thinker reads what the others concluded before thinking.
+   */
+  private async appendBlackboard(
+    date: string,
+    state: MentalState,
+    crystallized: Crystallized[],
+  ): Promise<void> {
+    const lines: string[] = [];
+    for (const c of crystallized) {
+      lines.push(`- Cristallisé : « ${c.thread.title} » → ${c.draftFile} (verdict ${c.verdict})`);
+    }
+    for (const t of state.threads) {
+      const last = t.thoughts[t.thoughts.length - 1];
+      if (last) lines.push(`- Fil « ${t.title} » (maturité ${t.maturity}) : ${last}`);
+    }
+    if (lines.length === 0) return;
+    const header = [
+      '---',
+      'type: note',
+      'tags: [auto, blackboard]',
+      '---',
+      '',
+      '# Tableau noir des penseurs (auto)',
+      '',
+      '> Chaque penseur (penseur de nuit, reflexion serveur, war-room) ecrit ici ses',
+      '> conclusions datees ET lit celles des autres avant de penser. C\'est l\'espace',
+      '> de travail partage : les conflits s\'y voient au lieu de s\'ignorer.',
+      '',
+    ].join('\n');
+    const existing = await this.readOptional(BLACKBOARD_FILE);
+    const idx = existing.indexOf('\n## ');
+    const body = idx >= 0 ? existing.slice(idx) : '';
+    const section = `\n## ${date} · reflexion-serveur\n\n${lines.join('\n')}\n`;
+    const sections = (section + body).split(/\n(?=## )/).slice(0, MAX_BLACKBOARD_SECTIONS);
+    await this.deps.vault.writeFile(BLACKBOARD_FILE, header + sections.join('\n'));
+  }
 
   private async ruminate(
     llm: LlmCompleter,
@@ -577,6 +645,7 @@ export function createReflectionService(
   organs: {
     memory?: MemoryStrengthStore | null;
     learnings?: (() => Promise<string>) | null;
+    conclusions?: import('@/services/conclusions/conclusions-registry').ConclusionsRegistry | null;
   } = {},
 ): ReflectionService | null {
   if (!hasChatProvider()) return null;
@@ -588,6 +657,7 @@ export function createReflectionService(
     llm: new SettingsBackedCompleter(getSettingsStore()),
     memory: organs.memory ?? null,
     learnings: organs.learnings ?? null,
+    conclusions: organs.conclusions ?? null,
   });
 }
 
@@ -598,6 +668,8 @@ interface Signal {
   coherence: unknown[];
   priorities: string;
   selfModel: string;
+  /** Recent conclusions of the OTHER thinkers (shared blackboard excerpt). */
+  blackboard: string;
   lessons: string[];
   date: string;
 }
@@ -718,6 +790,13 @@ function renderRuminationInput(prior: MentalState, s: Signal): string {
   }
   b.push('', 'MON MODÈLE DE SOI (boussole apprise) :', s.selfModel || '(pas encore construit — première rumination)', '');
   b.push('PRIORITÉS EXPLICITES DE DARIUS (prioritaires sur tout) :', s.priorities || '(non définies — déduis-les des projets actifs)', '');
+  if (s.blackboard) {
+    b.push(
+      'TABLEAU NOIR DES AUTRES PENSEURS (leurs conclusions récentes — ne redécouvre pas, pars de là ; si tu CONTREDIS une conclusion, dis-le explicitement dans le fil concerné) :',
+      s.blackboard,
+      '',
+    );
+  }
   if (s.lessons.length) {
     b.push('LEÇONS FRAÎCHES (mes prédictions vérifiées ce cycle) :');
     for (const l of s.lessons) b.push(`- ${l}`);

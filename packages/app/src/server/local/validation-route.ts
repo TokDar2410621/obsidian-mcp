@@ -1,5 +1,6 @@
 import type { Express, Request, Response } from 'express';
 import type { VaultManager } from '@/services/vault-manager';
+import type { ConclusionsRegistry } from '@/services/conclusions/conclusions-registry';
 import { logger } from '@/utils/logger';
 
 /**
@@ -305,11 +306,12 @@ export async function setTaskStatus(
   vault: VaultManager,
   taskPath: string,
   to: string,
-): Promise<{ from: string | null }> {
+): Promise<{ from: string | null; title: string | null }> {
   const content = await vault.readFile(taskPath);
   const { content: next, from } = flipTaskStatus(content, to);
   await vault.writeFile(taskPath, next);
-  return { from };
+  const title = (/^#\s+(.+)$/m.exec(content)?.[1] ?? '').trim() || null;
+  return { from, title };
 }
 
 export async function dropProposition(
@@ -384,12 +386,26 @@ function confirm(title: string, sub: string, token: string): string {
 
 // --- routes ---------------------------------------------------------------------
 
-export function registerValidationRoutes(app: Express, vault: VaultManager): boolean {
+export function registerValidationRoutes(
+  app: Express,
+  vault: VaultManager,
+  registry: ConclusionsRegistry | null = null,
+): boolean {
   const token = process.env.CAPTURE_TOKEN;
   if (!token) {
     logger.info('CAPTURE_TOKEN not set: validation routes disabled');
     return false;
   }
+
+  // Metacognition: every one-tap decision feeds the conclusions registry, so
+  // proposers can stop re-proposing what Darius already settled. Fire-and-log:
+  // a registry failure must never break the tap itself.
+  const remember = (text: string | null, source: string, status: 'valide' | 'rejete' | 'refuse' | 'promu') => {
+    if (!registry || !text) return;
+    registry
+      .record({ text, source, status })
+      .catch(error => logger.warn('Conclusions record failed', { error: String(error), source, status }));
+  };
 
   const gate = (req: Request, res: Response): boolean => {
     if ((req.query.k as string | undefined) !== token) {
@@ -402,29 +418,32 @@ export function registerValidationRoutes(app: Express, vault: VaultManager): boo
   const validTaskPath = (t: string): boolean => TASK_PATH_RE.test(t) && !t.includes('..');
 
   // Flip a task's statut. label describes the transition for the confirmation.
-  const flip = (to: string, label: string) => async (req: Request, res: Response) => {
-    if (!gate(req, res)) return;
-    const t = String(req.query.t ?? '');
-    if (!validTaskPath(t)) {
-      res.status(400).type('text/plain').send('bad task path');
-      return;
-    }
-    try {
-      if (!(await vault.fileExists(t))) {
-        res.type('text/html').send(confirm('Introuvable', 'Cette tâche n’existe plus.', token));
+  const flip =
+    (to: string, label: string, recordAs: 'valide' | 'rejete' | null = null) =>
+    async (req: Request, res: Response) => {
+      if (!gate(req, res)) return;
+      const t = String(req.query.t ?? '');
+      if (!validTaskPath(t)) {
+        res.status(400).type('text/plain').send('bad task path');
         return;
       }
-      const { from } = await setTaskStatus(vault, t, to);
-      logger.info('Task status flipped', { task: t, from, to });
-      res.type('text/html').send(confirm(label, `Statut : ${from ?? '?'} → ${to}.`, token));
-    } catch (error) {
-      logger.error('Task flip failed', { error: String(error), task: t, to });
-      res.status(500).type('text/plain').send('write failed');
-    }
-  };
+      try {
+        if (!(await vault.fileExists(t))) {
+          res.type('text/html').send(confirm('Introuvable', 'Cette tâche n’existe plus.', token));
+          return;
+        }
+        const { from, title } = await setTaskStatus(vault, t, to);
+        if (recordAs) remember(title, t, recordAs);
+        logger.info('Task status flipped', { task: t, from, to });
+        res.type('text/html').send(confirm(label, `Statut : ${from ?? '?'} → ${to}.`, token));
+      } catch (error) {
+        logger.error('Task flip failed', { error: String(error), task: t, to });
+        res.status(500).type('text/plain').send('write failed');
+      }
+    };
 
-  app.get('/valide', flip('validee', 'Validée'));
-  app.get('/rejette', flip('rejetee', 'Rejetée'));
+  app.get('/valide', flip('validee', 'Validée', 'valide'));
+  app.get('/rejette', flip('rejetee', 'Rejetée', 'rejete'));
   app.get('/approuve', flip('approuvee', 'Approuvée'));
 
   // Act on an 08-auto proposal: promote to a task, or drop it.
@@ -441,15 +460,17 @@ export function registerValidationRoutes(app: Express, vault: VaultManager): boo
     try {
       if (action === 'jeter') {
         const { removed } = await dropProposition(vault, file, hash);
+        if (removed) remember(cleanText(removed), file, 'refuse');
         res.type('text/html').send(
           removed
-            ? confirm('Jetée', 'Proposition retirée du cerveau.', token)
+            ? confirm('Jetée', 'Proposition retirée du cerveau. Elle ne reviendra pas.', token)
             : confirm('Déjà traitée', 'Cette proposition n’est plus là.', token),
         );
         return;
       }
       if (action === 'tache') {
-        const { path } = await promoteProposition(vault, file, hash);
+        const { path, text } = await promoteProposition(vault, file, hash);
+        if (text) remember(text, file, 'promu');
         res.type('text/html').send(
           path
             ? confirm('En tâche', `Le chef de chantier va la traiter (${path}).`, token)
@@ -469,7 +490,21 @@ export function registerValidationRoutes(app: Express, vault: VaultManager): boo
     if (!gate(req, res)) return;
     const k = encodeURIComponent(token);
     try {
-      const [tasks, props] = await Promise.all([listPendingTasks(vault), collectPropositions(vault)]);
+      const [tasks, allProps] = await Promise.all([listPendingTasks(vault), collectPropositions(vault)]);
+
+      // Metacognition filter: never show again what Darius already refused,
+      // even reformulated (semantic mask, one batched embedding call).
+      let props = allProps;
+      let hiddenCount = 0;
+      if (registry && allProps.length > 0) {
+        try {
+          const mask = await registry.refusedMask(allProps.map(p => cleanText(p.text)));
+          props = allProps.filter((_, i) => !mask[i]);
+          hiddenCount = allProps.length - props.length;
+        } catch (error) {
+          logger.warn('Refused mask failed, showing all proposals', { error: String(error) });
+        }
+      }
 
       const taskCards = tasks
         .map(t => {
@@ -504,7 +539,10 @@ export function registerValidationRoutes(app: Express, vault: VaultManager): boo
         `<h2>Tâches prêtes (${tasks.length})</h2>` +
         (taskCards || '<p class="empty">Rien à valider.</p>') +
         `<h2>Propositions (${props.length})</h2>` +
-        (propCards || '<p class="empty">Aucune proposition fraîche.</p>');
+        (propCards || '<p class="empty">Aucune proposition fraîche.</p>') +
+        (hiddenCount > 0
+          ? `<p class="sub" style="margin-top:10px">${hiddenCount} proposition(s) déjà refusée(s), masquée(s).</p>`
+          : '');
 
       res.type('text/html').send(page('Revue du cerveau', body));
     } catch (error) {
