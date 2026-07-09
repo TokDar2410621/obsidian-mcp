@@ -264,6 +264,32 @@ describe('morning brief', () => {
     expect(notify.pushes[0].message).not.toContain('Penseur de nuit');
   });
 
+  it('watchdog: la telemetrie HTTP en direct fait taire une alerte du fichier vault', async () => {
+    // Fichier vault muet (clone gele) MAIS le worker parle en HTTP : pas d'alerte de silence.
+    vault.files.set('08-auto/_insights.md', '# t\n\n## 2026-07-01\n\n- **[x] vieux**\n');
+    const svc = new MorningBriefService({
+      objectives: { loadObjectives: async () => objectives },
+      vault,
+      notify,
+      telemetry: () => ({ 'penseur-de-nuit': { last: new Date().toISOString(), ahead: 0 } }),
+    });
+    await svc.runBrief();
+    expect(notify.pushes[0].message).not.toContain('aucun battement');
+  });
+
+  it('watchdog: vivant mais ahead > 0 declenche l alerte push (le verificateur de push)', async () => {
+    const svc = new MorningBriefService({
+      objectives: { loadObjectives: async () => objectives },
+      vault,
+      notify,
+      telemetry: () => ({ 'chef-de-chantier': { last: new Date().toISOString(), ahead: 4 } }),
+    });
+    await svc.runBrief();
+    const msg = notify.pushes[0].message;
+    expect(msg).toContain('4 commit(s) non poussé(s)');
+    expect(msg).toContain('Chef de chantier');
+  });
+
   it('overdue deadline raises priority and is labelled', async () => {
     objectives = [objective({ echeance: '2000-01-01' })];
     await service().runBrief();

@@ -57,6 +57,8 @@ export interface MorningBriefDeps {
   token?: string | null;
   /** Conclusions registry: settled matters never count as pending again. */
   conclusions?: ConclusionsRegistry | null;
+  /** Live HTTP telemetry of the workers (their voice when git is frozen). */
+  telemetry?: (() => Record<string, { last: string; ahead?: number }>) | null;
 }
 
 export interface BriefResult {
@@ -248,14 +250,18 @@ export class MorningBriefService {
     // Each worker heartbeats into the vault; a stale beat raises ONE line here.
     const watchdogLines: string[] = [];
     try {
-      let hb: Record<string, { last?: string }> = {};
+      let hb: Record<string, { last?: string; ahead?: number }> = {};
       try {
         hb = JSON.parse(await vault.readFile(HEARTBEAT_FILE));
       } catch {
         /* no heartbeat file yet */
       }
+      // Live HTTP telemetry wins over the vault file: it still speaks when the
+      // git clone is frozen (the exact failure the vault channel cannot report).
+      const live = this.deps.telemetry?.() ?? {};
       for (const w of WATCHED_WORKERS) {
-        const last = hb[w.key]?.last;
+        const beat = live[w.key] ?? hb[w.key];
+        const last = beat?.last;
         // Bootstrap-safe: before any heartbeat exists, only the night thinker
         // alerts (its output file proves it is supposed to run).
         const known =
@@ -266,6 +272,11 @@ export class MorningBriefService {
         if (stale) {
           watchdogLines.push(
             `⚠️ ${w.label} : aucun battement récent (dernier : ${last ?? 'jamais'}). Vérifier PC2.`,
+          );
+        } else if ((beat?.ahead ?? 0) > 0) {
+          // Alive but its work is NOT reaching GitHub: the push verifier.
+          watchdogLines.push(
+            `⚠️ ${w.label} : vivant mais ${beat!.ahead} commit(s) non poussé(s). Le push de PC2 coince.`,
           );
         }
       }

@@ -48,6 +48,7 @@ import { scheduleRelanceSweep } from '@/services/relance/relance-cron';
 import { createNotifier } from '@/services/notify/notifier';
 import { registerCaptureRoute } from '@/server/local/capture-route';
 import { registerValidationRoutes } from '@/server/local/validation-route';
+import { registerTelemetryRoute, telemetrySnapshot } from '@/server/local/telemetry-route';
 import { createMemoryStrength } from '@/services/memory/memory-strength';
 import { createConclusionsRegistry } from '@/services/conclusions/conclusions-registry';
 import { createBucketStore } from '@/services/storage/bucket-store';
@@ -212,6 +213,7 @@ const morningBrief = objectiveSweep
       baseUrl: BASE_URL,
       token: process.env.CAPTURE_TOKEN || null,
       conclusions: conclusionsRegistry,
+      telemetry: telemetrySnapshot,
     })
   : null;
 
@@ -270,6 +272,9 @@ registerCaptureRoute(app, vaultManager);
 // the notif buttons flip a task's statut; /revue triages the 08-auto proposals.
 // Every tap feeds the conclusions registry (metacognition).
 registerValidationRoutes(app, vaultManager, conclusionsRegistry);
+
+// Workers' HTTP heartbeat: their voice when the git clone is frozen.
+registerTelemetryRoute(app);
 
 // A connector that dies must become a push on Darius's phone, never a silent
 // surprise discovered mid-task. Rate-limited: one alert per 12h max.
