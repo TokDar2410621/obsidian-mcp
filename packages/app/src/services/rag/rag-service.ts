@@ -48,6 +48,8 @@ interface SearchArgs {
   query: string;
   top_k?: number;
   folder?: string;
+  /** Exclude notes under this folder prefix (e.g. '08-auto' to avoid self-citation loops). */
+  notFolder?: string;
   tags?: string[];
 }
 
@@ -55,6 +57,8 @@ interface AskArgs {
   question: string;
   top_k?: number;
   folder?: string;
+  /** Exclude notes under this folder prefix (e.g. '08-auto' to avoid self-citation loops). */
+  notFolder?: string;
   tags?: string[];
 }
 
@@ -340,7 +344,7 @@ export class RagService {
 
   private async retrieve(
     query: string,
-    filters: { top_k?: number; folder?: string; tags?: string[] },
+    filters: { top_k?: number; folder?: string; notFolder?: string; tags?: string[] },
   ): Promise<SearchHit[]> {
     const topK = clampTopK(filters.top_k);
     const cfg = this.settings?.get().retrieval;
@@ -354,6 +358,7 @@ export class RagService {
     for (let i = 0; i < this.chunks.length; i++) {
       const c = this.chunks[i];
       if (filters.folder && !c.file.startsWith(filters.folder)) continue;
+      if (filters.notFolder && c.file.startsWith(filters.notFolder)) continue;
       if (filters.tags && filters.tags.length > 0 && !filters.tags.some(t => c.tags.includes(t)))
         continue;
       candidates.push(i);

@@ -164,6 +164,21 @@ export class GraphService {
     }
   }
 
+  /**
+   * Spreading activation: the notes "woken" by freshly changed notes (graph
+   * neighbours up to 2 hops, decayed). Input files and agent outputs (08-auto)
+   * are excluded; used by the webhook to write echoes for the next thinker.
+   */
+  async echoesFor(files: string[], top = 5): Promise<Array<{ file: string; score: number }>> {
+    await this.ensureReady();
+    const scores = this.graph.neighborsOfFiles(files, 2);
+    return [...scores.entries()]
+      .filter(([f]) => !f.startsWith('08-auto/'))
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, top)
+      .map(([file, score]) => ({ file, score: Math.round(score * 100) / 100 }));
+  }
+
   /** Structural view: graph size, communities (connected components), hub entities. */
   async graphOverview(args: { min_cluster_size?: number } = {}): Promise<ToolResponse> {
     try {

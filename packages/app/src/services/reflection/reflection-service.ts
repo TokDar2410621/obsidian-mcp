@@ -66,6 +66,8 @@ interface Thread {
   maturity: number; // 0..1 (monotone non-decreasing while alive)
   status: ThreadStatus;
   thoughts: string[];
+  /** Angle declared for each cycle's new thought: preuve | contre | dissolution | aucun. */
+  angles?: string[];
   lastFed: string;
   bornOn: string;
   cycles: number; // how many cycles this thread has been ruminated
@@ -392,6 +394,19 @@ export class ReflectionService {
       const fresh = String(r.new_thought ?? '').trim();
       if (fresh) thoughts.push(fresh);
 
+      // Zeigarnik with teeth: each cycle must declare its angle. A thought
+      // without a new angle does not raise maturity; three angle-less cycles
+      // in a row kill the thread (idling is not thinking).
+      const angle = fresh ? normAngle(r.angle) : 'aucun';
+      const angles = [...(before?.angles ?? []), angle].slice(-MAX_THOUGHTS);
+      if (shouldKillThread(angles)) {
+        logger.info('Reflection: thread killed (3 cycles without a new angle)', { thread: id });
+        continue;
+      }
+      const prevMaturity = before?.maturity ?? 0;
+      const maturity =
+        angle === 'aucun' ? prevMaturity : Math.max(clamp01(r.maturity ?? 0), prevMaturity);
+
       threads.push({
         id,
         title: String(r.title ?? before?.title ?? id).trim(),
@@ -399,9 +414,10 @@ export class ReflectionService {
         mode: normMode(r.mode ?? before?.mode),
         target: String(r.target ?? before?.target ?? '').trim(),
         salience: clamp01(r.salience ?? before?.salience ?? 0.4),
-        maturity: Math.max(clamp01(r.maturity ?? 0), before?.maturity ?? 0), // monotone
+        maturity,
         status: normStatus(r.status),
         thoughts: thoughts.slice(-MAX_THOUGHTS),
+        angles,
         lastFed: signal.date,
         bornOn: before?.bornOn ?? signal.date,
         cycles: (before?.cycles ?? 0) + 1,
@@ -419,6 +435,9 @@ export class ReflectionService {
       question:
         `Le ${p.madeOn}, une prédiction a été faite : « ${p.statement} » (échéance ${p.expectedBy}). ` +
         `D'après les notes les plus récentes, que s'est-il réellement passé à ce sujet ?`,
+      // Evidence must come from the world (Darius's notes), never from the
+      // mind's own outputs — otherwise the loop judges itself with itself.
+      notFolder: AUTO_DIR,
     });
     const d = asked.success ? (asked.data as Record<string, unknown>) : null;
     const evidence = String((d?.answer as string) ?? '').trim();
@@ -517,6 +536,10 @@ export class ReflectionService {
         thread.mode === 'create'
           ? `${thread.title}. Rassemble la matière du vault pour rédiger : ${thread.target}`
           : `${thread.title}. Qu'est-ce qui cloche ou manque dans : ${thread.target} ? Donne la matière pour l'améliorer.`,
+      // Never crystallise from the mind's own outputs: a reflection citing
+      // 6/7 of its own 08-auto files is rumination in a closed loop, not
+      // thinking (diagnostic gap #4). Material must come from real notes.
+      notFolder: AUTO_DIR,
     });
     const d = asked.success ? (asked.data as Record<string, unknown>) : null;
     const material = String((d?.answer as string) ?? '').trim();
@@ -690,6 +713,28 @@ interface RawThread {
   maturity?: number;
   status?: string;
   new_thought?: string;
+  angle?: string;
+}
+
+/** Normalise the declared angle of a cycle's thought. */
+export function normAngle(raw: unknown): 'preuve' | 'contre' | 'dissolution' | 'aucun' {
+  const a = String(raw ?? '')
+    .trim()
+    .toLowerCase();
+  if (a.startsWith('preuve')) return 'preuve';
+  if (a.startsWith('contre')) return 'contre';
+  if (a.startsWith('dissol')) return 'dissolution';
+  return 'aucun';
+}
+
+/**
+ * Zeigarnik with teeth (diagnostic gap #4): a thread that returns three cycles
+ * in a row WITHOUT a new angle (no fresh proof, no counter-argument, no
+ * dissolution) is not ruminating, it is idling. Kill it instead of ripening it.
+ */
+export function shouldKillThread(angles: string[]): boolean {
+  if (angles.length < 3) return false;
+  return angles.slice(-3).every(a => a === 'aucun');
 }
 
 /**
@@ -731,12 +776,14 @@ const RUMINATE_SYSTEM = [
   "- Tu peux faire ÉCLORE au plus 1 nouveau fil si quelque chose d'important n'y est pas encore.",
   '- Laisse FANER un fil résolu ou sans intérêt en NE LE RENVOYANT PAS (ne renvoie pas de fil avec status "faded", omets-le simplement).',
   '- Pour chaque fil, dis vers quoi il PENCHE : "create" (une note/synthèse/hub qui manque) ou "improve" (une note existante faible/périmée à renforcer), et sa "target" (ce qu\'il faut créer, ou le chemin de la note à améliorer).',
-  '- salience = importance/urgence (0..1), ancrée sur TON MODÈLE DE SOI, les priorités explicites de Darius et le non-résolu. maturity = à quel point le fil est développé (0..1) ; elle ne redescend pas.',
+  '- salience = importance/urgence (0..1), ancrée sur TON MODÈLE DE SOI, les priorités explicites de Darius et le non-résolu. maturity = à quel point le fil est développé (0..1).',
+  '- Chaque new_thought DOIT déclarer son "angle" : "preuve" (un fait nouveau tiré des notes soutient le fil), "contre" (un contre-argument ou une objection réelle), "dissolution" (un prérequis ou le problème lui-même se dissout), ou "aucun" (rien de neuf ce cycle). Sois honnête : un angle "aucun" trois cycles de suite TUE le fil. Redire la même chose avec d\'autres mots = "aucun". La maturité ne monte que si l\'angle est réel.',
+  '- Ne cite pas tes propres sorties (08-auto) comme preuve : une preuve vient des notes de Darius, du réel.',
   '- status = "ripe" UNIQUEMENT quand le fil est assez mûr ET a une cible claire, prêt à produire. Sinon "active".',
   '- Tu peux poser AU PLUS UN pari ("prediction") : une attente datée et VÉRIFIABLE sur le réel, dont l\'échéance pourra te donner tort ou raison. Tes erreurs de prédiction sont ton plus fort signal d\'apprentissage — intègre les LEÇONS FRAÎCHES fournies.',
   `Maximum ${MAX_THREADS} fils actifs. Reste concentré : peu de fils profonds valent mieux que beaucoup de superficiels.`,
   'Réponds UNIQUEMENT en JSON, sans aucun texte avant ou après :',
-  '{"threads":[{"id":"slug-stable","title":"…","why":"…","mode":"create|improve","target":"…","salience":0.8,"maturity":0.6,"status":"active|ripe","new_thought":"la pensée ajoutée ce cycle"}],"prediction":{"statement":"…","expectedBy":"YYYY-MM-DD","confidence":0.6}}',
+  '{"threads":[{"id":"slug-stable","title":"…","why":"…","mode":"create|improve","target":"…","salience":0.8,"maturity":0.6,"status":"active|ripe","new_thought":"la pensée ajoutée ce cycle","angle":"preuve|contre|dissolution|aucun"}],"prediction":{"statement":"…","expectedBy":"YYYY-MM-DD","confidence":0.6}}',
   'Le champ "prediction" est optionnel : omets-le si aucun pari ne s\'impose.',
 ].join('\n');
 
