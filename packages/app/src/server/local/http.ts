@@ -49,6 +49,7 @@ import { createNotifier } from '@/services/notify/notifier';
 import { registerCaptureRoute } from '@/server/local/capture-route';
 import { registerValidationRoutes } from '@/server/local/validation-route';
 import { createMemoryStrength } from '@/services/memory/memory-strength';
+import { createConclusionsRegistry } from '@/services/conclusions/conclusions-registry';
 import { createBucketStore } from '@/services/storage/bucket-store';
 import { registerStorageTools } from '@/mcp/storage-tool-registrations';
 import { registerUploadRoutes } from '@/server/local/upload-page';
@@ -147,6 +148,14 @@ if (ragService && memoryStore) {
   ragService.setRecallListener(files => memoryStore.recordRecall(files));
 }
 
+// Conclusions registry (metacognition): the cerveau's memory of its OWN
+// conclusions and of Darius's refusals. Fed by the one-tap /revue routes,
+// consulted by every proposer so nothing refused is ever re-proposed.
+const conclusionsRegistry = createConclusionsRegistry(
+  vaultManager,
+  ragService ? texts => ragService.embedQueries(texts) : null,
+);
+
 // Optional autonomous mind (level 3): once a day the cerveau ruminates its
 // persistent threads, checks its predictions, maintains its self-model and
 // crystallises ripe threads — propose-only into `08-auto/`. Needs RAG +
@@ -156,6 +165,7 @@ const reflection =
     ? createReflectionService(ragService, synapsesService, learning.service, vaultManager, {
         memory: memoryStore,
         learnings: () => learning.store.getLearnings(),
+        conclusions: conclusionsRegistry,
       })
     : null;
 
@@ -243,7 +253,8 @@ registerCaptureRoute(app, vaultManager);
 
 // One-tap validate / refuse (GET /valide, /rejette, /approuve, /revue, /prop):
 // the notif buttons flip a task's statut; /revue triages the 08-auto proposals.
-registerValidationRoutes(app, vaultManager);
+// Every tap feeds the conclusions registry (metacognition).
+registerValidationRoutes(app, vaultManager, conclusionsRegistry);
 
 registerOAuthRoutes(app, {
   clientId: OAUTH_CLIENT_ID,

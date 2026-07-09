@@ -80,6 +80,31 @@ export function isExpired(p: Prediction, today: string): boolean {
   return (now - due) / 86_400_000 > EXPIRE_AFTER_DAYS;
 }
 
+/**
+ * Near-duplicate detection for bet statements. Exact-string equality let five
+ * paraphrases of the same bet pile up in the book (diagnostic pensee-humaine,
+ * ecart metacognition). Token overlap (Szymkiewicz-Simpson: intersection over
+ * the smaller set) catches "envoyer l'email #289 au marchand" vs "l'email
+ * marchand #289 sera envoye" without any embedding call.
+ */
+export function isNearDuplicate(a: string, b: string, threshold = 0.6): boolean {
+  const tokens = (s: string) =>
+    new Set(
+      s
+        .normalize('NFKD')
+        .replace(/[̀-ͯ]/g, '')
+        .toLowerCase()
+        .split(/[^a-z0-9#]+/)
+        .filter(t => t.length > 2 || t.startsWith('#')),
+    );
+  const ta = tokens(a);
+  const tb = tokens(b);
+  if (ta.size === 0 || tb.size === 0) return a.trim().toLowerCase() === b.trim().toLowerCase();
+  let inter = 0;
+  for (const t of ta) if (tb.has(t)) inter++;
+  return inter / Math.min(ta.size, tb.size) >= threshold;
+}
+
 /** Add a new bet if the statement is sound and the book has room. */
 export function addPrediction(
   book: PredictionBook,
@@ -92,7 +117,7 @@ export function addPrediction(
   if (!statement || !/^\d{4}-\d{2}-\d{2}$/.test(expectedBy)) return null;
   if (expectedBy <= today) return null; // a bet must be about the future
   if (book.open.length >= MAX_OPEN) return null;
-  if (book.open.some(o => o.statement.toLowerCase() === statement.toLowerCase())) return null;
+  if (book.open.some(o => isNearDuplicate(o.statement, statement))) return null;
   // Collision-proof id: open.length shrinks when bets resolve, so derive the
   // suffix from the max already used today (across open AND resolved).
   const prefix = `p-${today}-`;

@@ -102,6 +102,45 @@ describe('validation routes (HTTP)', () => {
     expect(vault.files.get('08-auto/_insights.md')).not.toContain('Jetable');
   });
 
+  it('feeds the conclusions registry and hides refused repeats (metacognition)', async () => {
+    const { ConclusionsRegistry, CONCLUSIONS_FILE } = await import(
+      '@/services/conclusions/conclusions-registry'
+    );
+    // Isolated app + vault + registry (no embedder: exact matching is enough here).
+    const v2 = new FakeVault();
+    const registry = new ConclusionsRegistry(v2, null);
+    const app2 = express();
+    registerValidationRoutes(app2, v2, registry);
+    const srv2: Server = await new Promise(resolve => {
+      const s = app2.listen(0, () => resolve(s));
+    });
+    const addr = srv2.address();
+    const b2 = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
+    try {
+      const daily = '03-daily/2026-07-09.md';
+      const bullet = '[ ] **04-people/x.md** : proposition repetitive du jour';
+      v2.files.set(daily, `# j\n\n### Propositions en attente (à valider)\n\n- ${bullet}\n`);
+      const { bulletHash } = await import('@/server/local/validation-route');
+      const h = bulletHash(daily, bullet);
+      // Darius throws it away once...
+      const r = await fetch(`${b2}/prop?k=${TOKEN}&a=jeter&f=${encodeURIComponent(daily)}&h=${h}`);
+      expect(r.status).toBe(200);
+      // ...the refusal is registered...
+      const data = JSON.parse(v2.files.get(CONCLUSIONS_FILE) as string);
+      expect(data.items[0].status).toBe('refuse');
+      // ...and when the ingestion re-writes the SAME proposal the next day,
+      // /revue hides it instead of nagging a 30th time.
+      const daily2 = '03-daily/2026-07-10.md';
+      v2.files.set(daily2, `# j\n\n### Propositions en attente (à valider)\n\n- ${bullet}\n`);
+      const rev = await fetch(`${b2}/revue?k=${TOKEN}`);
+      const html = await rev.text();
+      expect(html).not.toContain('proposition repetitive du jour');
+      expect(html).toContain('déjà refusée');
+    } finally {
+      srv2.close();
+    }
+  });
+
   it('surfaces a daily-note proposal on /revue and can jeter it', async () => {
     const daily = '03-daily/2026-07-07.md';
     vault.files.set(
