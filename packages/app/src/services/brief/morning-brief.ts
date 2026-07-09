@@ -1,7 +1,8 @@
 import type { VaultManager } from '@/services/vault-manager';
 import type { NotifyPusher } from '@/services/notify/notifier';
 import type { ObjectiveNote } from '@/services/objectives/objective-sweep';
-import { collectDailyPropositions } from '@/server/local/validation-route';
+import type { ConclusionsRegistry } from '@/services/conclusions/conclusions-registry';
+import { collectDailyPropositions, cleanText } from '@/server/local/validation-route';
 import { logger } from '@/utils/logger';
 
 /**
@@ -19,6 +20,9 @@ const STATE_FILE = `${AUTO_DIR}/_brief-state.json`;
 const RECORD_FILE = `${AUTO_DIR}/_brief-matin.md`;
 const PRIORITIES_FILE = `${AUTO_DIR}/_priorities.md`;
 const QUESTION_FILE = `${AUTO_DIR}/_question.md`;
+/** Heartbeat written by the PC2 night thinker at every run (even silent ones). */
+const HEARTBEAT_FILE = `${AUTO_DIR}/_veille-workers.json`;
+const HEARTBEAT_STALE_MS = 26 * 3600 * 1000; // one missed nightly run + margin
 
 /** Files whose fresh bullets count as "waiting for Darius". */
 const INSIGHTS_FILE = `${AUTO_DIR}/_insights.md`;
@@ -48,6 +52,8 @@ export interface MorningBriefDeps {
   baseUrl?: string;
   /** Capture token, gating the answer page. Button omitted when absent. */
   token?: string | null;
+  /** Conclusions registry: settled matters never count as pending again. */
+  conclusions?: ConclusionsRegistry | null;
 }
 
 export interface BriefResult {
@@ -200,9 +206,20 @@ export class MorningBriefService {
     }
 
     // Orphan channel: proposals the cloud ingestion left in the newest daily
-    // note. Nothing used to deliver these; now they count and reach the Revue.
+    // note. Settled conclusions (validated, refused, promoted) are excluded,
+    // even reformulated: an unticked checkbox must not re-serve done work.
     try {
-      const dailyProps = await collectDailyPropositions(vault);
+      let dailyProps = await collectDailyPropositions(vault);
+      if (dailyProps.length > 0 && this.deps.conclusions) {
+        try {
+          const mask = await this.deps.conclusions.settledMask(
+            dailyProps.map(p => cleanText(p.text)),
+          );
+          dailyProps = dailyProps.filter((_, i) => !mask[i]);
+        } catch {
+          /* mask failure: fall back to the raw count */
+        }
+      }
       if (dailyProps.length > 0) {
         pendingTotal += dailyProps.length;
         pendingParts.push(`${dailyProps.length} du carnet du jour`);
@@ -223,7 +240,41 @@ export class MorningBriefService {
       /* no question file yet */
     }
 
-    const lines = [questionLine, insightLine, deadlineLine, priorityLine].filter(Boolean) as string[];
+    // Watchdog: a silent failure of the night thinker must become a signal.
+    // The worker writes a heartbeat at every run (even a "nothing worthy"
+    // night); a stale/missing heartbeat while the thinker is known to exist
+    // (insights file present) means the PC2 pipeline is down, and the human
+    // must hear it instead of a quietly thinner brief.
+    let watchdogLine: string | null = null;
+    try {
+      const insightsExist = await vault.fileExists(INSIGHTS_FILE);
+      if (insightsExist) {
+        let stale = true;
+        let lastSeen = 'jamais';
+        try {
+          const hb = JSON.parse(await vault.readFile(HEARTBEAT_FILE)) as Record<
+            string,
+            { last?: string }
+          >;
+          const last = hb['penseur-de-nuit']?.last;
+          if (last) {
+            lastSeen = last;
+            stale = Date.now() - Date.parse(last) > HEARTBEAT_STALE_MS;
+          }
+        } catch {
+          /* no heartbeat file: stale stays true */
+        }
+        if (stale) {
+          watchdogLine = `⚠️ Penseur de nuit : aucun battement récent (dernier : ${lastSeen}). Vérifier PC2.`;
+        }
+      }
+    } catch {
+      /* watchdog must never break the brief */
+    }
+
+    const lines = [questionLine, insightLine, watchdogLine, deadlineLine, priorityLine].filter(
+      Boolean,
+    ) as string[];
     if (pendingTotal > 0) lines.push(`En attente de toi : ${pendingParts.join(', ')} (08-auto)`);
 
     if (lines.length === 0) {

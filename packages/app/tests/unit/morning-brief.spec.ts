@@ -225,6 +225,45 @@ describe('morning brief', () => {
     expect(parseLatestInsight(md)).not.toContain('Vieille idee');
   });
 
+  it('excludes settled conclusions from the daily-channel count', async () => {
+    vault.files.set(
+      '03-daily/2026-07-09.md',
+      '# j\n\n### Propositions en attente (à valider)\n\n- [ ] deja faite hier\n- [ ] toute neuve\n',
+    );
+    const fakeRegistry = {
+      settledMask: async (texts: string[]) => texts.map(t => t.includes('deja faite')),
+    };
+    const svc = new MorningBriefService({
+      objectives: { loadObjectives: async () => objectives },
+      vault,
+      notify,
+      baseUrl: 'https://cerveau.example',
+      token: 'tok',
+      conclusions: fakeRegistry as any,
+    });
+    const result = await svc.runBrief();
+    expect(result.sent).toBe(true);
+    expect(notify.pushes[0].message).toContain('1 du carnet du jour'); // pas 2
+  });
+
+  it('watchdog: alerts when the night thinker heartbeat is missing or stale', async () => {
+    vault.files.set('08-auto/_insights.md', '# t\n\n## 2026-07-01\n\n- **[x] vieux**\n');
+    // Heartbeat absent → alerte.
+    const r1 = await service().runBrief();
+    expect(r1.sent).toBe(true);
+    expect(notify.pushes[0].message).toContain('Penseur de nuit');
+    // Heartbeat frais → silence du chien de garde.
+    vault.files.set(
+      '08-auto/_veille-workers.json',
+      JSON.stringify({ 'penseur-de-nuit': { last: new Date().toISOString() } }),
+    );
+    notify.pushes = [];
+    const svc2 = service();
+    const r2 = await svc2.runBrief(true);
+    expect(r2.sent).toBe(true);
+    expect(notify.pushes[0].message).not.toContain('Penseur de nuit');
+  });
+
   it('overdue deadline raises priority and is labelled', async () => {
     objectives = [objective({ echeance: '2000-01-01' })];
     await service().runBrief();
