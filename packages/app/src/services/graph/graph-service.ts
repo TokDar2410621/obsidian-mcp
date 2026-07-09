@@ -112,7 +112,13 @@ export class GraphService {
       if (cached && cached.hash === hash && !retryThisBuild) {
         nextCache.set(file, cached);
       } else {
-        const extraction = await this.llm.extract(text);
+        let extraction = await this.llm.extract(text);
+        // Never overwrite a good extraction with an empty one: an LLM hiccup
+        // on a CHANGED note must degrade to the previous knowledge (slightly
+        // stale beats blind), not blank the note out of the graph.
+        if (extraction.entities.length === 0 && cached && cached.extraction.entities.length > 0) {
+          extraction = cached.extraction;
+        }
         const emptyRetries =
           extraction.entities.length === 0 ? (cached?.emptyRetries ?? 0) + 1 : undefined;
         nextCache.set(file, { hash, extraction, ...(emptyRetries ? { emptyRetries } : {}) });
@@ -189,13 +195,52 @@ export class GraphService {
   }
 
   /**
-   * Spreading activation: the notes "woken" by freshly changed notes (graph
-   * neighbours up to 2 hops, decayed). Input files and agent outputs (08-auto)
-   * are excluded; used by the webhook to write echoes for the next thinker.
+   * Spreading activation: the notes "woken" by freshly changed notes. Two
+   * complementary association layers, merged:
+   *   1. LLM entity graph neighbours (2 hops, decayed) — semantic association.
+   *   2. The vault's OWN [[wikilinks]] — outgoing links of the changed notes
+   *      and backlinks pointing at them. Deterministic, free, and robust even
+   *      when the LLM extraction of a note failed (empty entities).
+   * Input files and agent outputs (08-auto) are excluded; the webhook writes
+   * the result as echoes for the next thinker.
    */
   async echoesFor(files: string[], top = 5): Promise<Array<{ file: string; score: number }>> {
     await this.ensureReady();
     const scores = this.graph.neighborsOfFiles(files, 2);
+
+    // Layer 2: explicit wikilinks over the rag chunks (no LLM involved).
+    const input = new Set(files);
+    const chunks = this.rag.embeddedChunks;
+    const byBase = new Map<string, string>();
+    for (const c of chunks) {
+      const base = c.file.replace(/\.md$/, '').split('/').pop()!.toLowerCase();
+      if (!byBase.has(base)) byBase.set(base, c.file);
+    }
+    const changedBases = new Set(
+      files.map(f => f.replace(/\.md$/, '').split('/').pop()!.toLowerCase()),
+    );
+    const bump = (file: string, w: number) => {
+      if (!input.has(file)) scores.set(file, (scores.get(file) ?? 0) + w);
+    };
+    const linkRe = /\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]/g;
+    for (const c of chunks) {
+      if (input.has(c.file)) {
+        // Outgoing links of a changed note wake their targets.
+        for (const m of c.text.matchAll(linkRe)) {
+          const target = byBase.get(m[1].trim().split('/').pop()!.toLowerCase());
+          if (target) bump(target, 1);
+        }
+      } else {
+        // Backlinks: a note that points at a changed note wakes too.
+        for (const m of c.text.matchAll(linkRe)) {
+          if (changedBases.has(m[1].trim().split('/').pop()!.toLowerCase())) {
+            bump(c.file, 0.8);
+            break;
+          }
+        }
+      }
+    }
+
     return [...scores.entries()]
       .filter(([f]) => !f.startsWith('08-auto/'))
       .sort((a, b) => b[1] - a[1])

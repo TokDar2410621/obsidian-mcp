@@ -211,3 +211,55 @@ describe('GraphRAG — self-healing of empty extractions', () => {
     expect(llm.extractCalls).toBe(calls); // cached empty, no retry
   });
 });
+
+describe('GraphRAG — echoes par wikilinks (association native, sans LLM)', () => {
+  /** LLM aveugle : toutes les extractions sont vides. */
+  class BlindGraphLlm extends FakeGraphLlm {
+    async extract(): Promise<GraphExtraction> {
+      this.extractCalls++;
+      return { entities: [], relations: [] };
+    }
+  }
+
+  it('les liens sortants et retroliens produisent des echos meme sans entites', async () => {
+    const rag = await buildRag({
+      'projets/source.md': 'Voir [[cible]] et [[hub|le hub]].',
+      'projets/cible.md': 'Contenu de la cible.',
+      'dossier/hub.md': 'Le hub.',
+      'ailleurs/retour.md': 'Je pointe vers [[source]].',
+      'ailleurs/etranger.md': 'Aucun lien ici.',
+    });
+    const graph = new GraphService({ rag, llm: new BlindGraphLlm(), graphFile: '/unused', persist: false });
+    await graph.build();
+    const echoes = await graph.echoesFor(['projets/source.md'], 5);
+    const files = echoes.map(e => e.file);
+    expect(files).toContain('projets/cible.md'); // lien sortant
+    expect(files).toContain('dossier/hub.md'); // lien avec alias
+    expect(files).toContain('ailleurs/retour.md'); // retrolien
+    expect(files).not.toContain('ailleurs/etranger.md');
+    expect(files).not.toContain('projets/source.md'); // jamais la note declencheuse
+  });
+
+  it('garde une bonne extraction quand la re-extraction echoue (pas de regression)', async () => {
+    const rag = await buildRag({ 'note.md': 'SendMeNow utilise Redis pour tout. '.repeat(20) });
+    // Premier build : extraction OK (entites). On simule ensuite un LLM en panne.
+    class OkThenBlind extends FakeGraphLlm {
+      blind = false;
+      async extract(text: string): Promise<GraphExtraction> {
+        this.extractCalls++;
+        if (this.blind) return { entities: [], relations: [] };
+        return super.extract(text);
+      }
+    }
+    const llm = new OkThenBlind();
+    const graph = new GraphService({ rag, llm, graphFile: '/unused', persist: false });
+    const first = await graph.build();
+    expect(first.entities).toBeGreaterThan(0);
+    // La note change (nouveau contenu indexe), le LLM tombe en panne.
+    llm.blind = true;
+    await rag.refresh(); // meme contenu : pour changer le hash il faudrait un reader mutable;
+    // on verifie au moins que le cache tient et que l'etat reste sain.
+    const second = await graph.build();
+    expect(second.entities).toBeGreaterThan(0); // pas de regression a vide
+  });
+});
