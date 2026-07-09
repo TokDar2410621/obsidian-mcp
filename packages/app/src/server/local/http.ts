@@ -279,7 +279,12 @@ registerOAuthRoutes(app, {
 registerMcpRoute(app, mcpServer);
 
 if (ragService) {
-  registerGithubWebhook(app, ragService, graphService, objectiveSweep, captureLink);
+  // organs: vault for the echoes file (spreading activation at every push),
+  // reflection for the opt-in micro-wake (EVENT_REFLECTION=on).
+  registerGithubWebhook(app, ragService, graphService, objectiveSweep, captureLink, {
+    vault: vaultManager,
+    reflection,
+  });
 }
 
 const PORT = parseInt(process.env.PORT || '3000');

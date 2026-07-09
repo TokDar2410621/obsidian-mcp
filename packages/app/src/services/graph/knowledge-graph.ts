@@ -107,6 +107,51 @@ export class KnowledgeGraph {
       .map(x => x.k);
   }
 
+  /**
+   * Spreading activation (diagnostic pensee-humaine, gap #6): given freshly
+   * changed notes, wake their neighbourhood. Seeds are the entities the notes
+   * mention; activation spreads over the adjacency up to `depth` hops with
+   * 1/(d+1) decay; every OTHER note mentioned by an activated entity
+   * accumulates the activation. Returns file -> score, input files excluded.
+   */
+  neighborsOfFiles(files: string[], depth = 2): Map<string, number> {
+    const input = new Set(files);
+    const scores = new Map<string, number>();
+    const visited = new Set<string>();
+    let frontier: string[] = [];
+    for (const [k, node] of this.nodes) {
+      for (const m of node.mentions) {
+        if (input.has(m)) {
+          frontier.push(k);
+          visited.add(k);
+          break;
+        }
+      }
+    }
+    for (let d = 0; d <= depth && frontier.length > 0; d++) {
+      const w = 1 / (d + 1);
+      for (const k of frontier) {
+        const node = this.nodes.get(k);
+        if (!node) continue;
+        for (const m of node.mentions) {
+          if (input.has(m)) continue;
+          scores.set(m, (scores.get(m) ?? 0) + w);
+        }
+      }
+      const next: string[] = [];
+      for (const k of frontier) {
+        for (const n of this.adjacency.get(k) ?? []) {
+          if (!visited.has(n)) {
+            visited.add(n);
+            next.push(n);
+          }
+        }
+      }
+      frontier = next;
+    }
+    return scores;
+  }
+
   /** BFS neighborhood around seed keys up to `depth` hops. */
   expand(seeds: string[], depth: number): Set<string> {
     const visited = new Set<string>(seeds.filter(s => this.nodes.has(s)));
