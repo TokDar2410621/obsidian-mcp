@@ -117,6 +117,10 @@ export function registerGithubWebhook(
 
     if (event === 'push') {
       const changed = changedNotesOf(req.body);
+      logger.info('Webhook push received', {
+        changed: changed.length,
+        files: changed.slice(0, 3),
+      });
       rag
         .refresh()
         .then(result => {
@@ -148,10 +152,17 @@ export function registerGithubWebhook(
         // spreading activation over the fresh graph writes the echoes the
         // thinkers (night thinker on PC2, server reflection) consume.
         .then(async () => {
-          if (!vault || !graph || changed.length === 0) return;
+          if (changed.length === 0) return; // routine server-state push
+          if (!vault || !graph) {
+            logger.info('Echoes skipped (vault or graph organ not wired)');
+            return;
+          }
           try {
             const echoes = await graph.echoesFor(changed, 5);
-            if (echoes.length === 0) return;
+            if (echoes.length === 0) {
+              logger.info('Echoes: none found for changed notes', { files: changed });
+              return;
+            }
             const existing = await vault.readFile(ECHOS_FILE).catch(() => '');
             const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
             await vault.writeFile(ECHOS_FILE, renderEchos(existing, stamp, changed, echoes));
