@@ -13,6 +13,12 @@ export interface OAuthConfig {
   clientId: string;
   clientSecret: string;
   baseUrl: string;
+  /**
+   * Called when a refresh_token grant FAILS: the exact moment a connector
+   * truly dies and needs human re-authorization. Wire a phone notification
+   * here so a dead connector is a push, never a silent surprise.
+   */
+  onRefreshFailure?: () => void;
 }
 
 const SESSION_EXPIRY_MS = Number(process.env.SESSION_EXPIRY_MS || 24 * 60 * 60 * 1000);
@@ -280,6 +286,11 @@ export function registerOAuthRoutes(app: Express, config: OAuthConfig): void {
       const result = await auth.refreshAccessToken(refresh_token);
 
       if (!result) {
+        try {
+          config.onRefreshFailure?.();
+        } catch {
+          /* alerting must never break the OAuth flow */
+        }
         return res.status(400).json({
           error: 'invalid_grant',
           error_description: 'Invalid or expired refresh token',

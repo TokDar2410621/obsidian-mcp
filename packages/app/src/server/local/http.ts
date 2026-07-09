@@ -271,10 +271,27 @@ registerCaptureRoute(app, vaultManager);
 // Every tap feeds the conclusions registry (metacognition).
 registerValidationRoutes(app, vaultManager, conclusionsRegistry);
 
+// A connector that dies must become a push on Darius's phone, never a silent
+// surprise discovered mid-task. Rate-limited: one alert per 12h max.
+let lastAuthAlert = 0;
 registerOAuthRoutes(app, {
   clientId: OAUTH_CLIENT_ID,
   clientSecret: OAUTH_CLIENT_SECRET,
   baseUrl: BASE_URL,
+  onRefreshFailure: () => {
+    const now = Date.now();
+    if (now - lastAuthAlert < 12 * 3600 * 1000) return;
+    lastAuthAlert = now;
+    notifier
+      ?.push({
+        title: 'Connecteur Cerveau déconnecté',
+        message:
+          "Le renouvellement du token a échoué : les outils du cerveau (claude.ai, Claude Code) sont coupés jusqu'à réautorisation. Depuis le téléphone : claude.ai → Paramètres → Connecteurs → Cerveau → Reconnecter.",
+        priority: 4,
+        tags: ['warning'],
+      })
+      .catch(() => undefined);
+  },
 });
 
 registerMcpRoute(app, mcpServer);
