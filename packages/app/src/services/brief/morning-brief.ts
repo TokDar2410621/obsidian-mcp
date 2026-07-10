@@ -20,11 +20,14 @@ const STATE_FILE = `${AUTO_DIR}/_brief-state.json`;
 const RECORD_FILE = `${AUTO_DIR}/_brief-matin.md`;
 const PRIORITIES_FILE = `${AUTO_DIR}/_priorities.md`;
 const QUESTION_FILE = `${AUTO_DIR}/_question.md`;
-/** Heartbeats written by the PC2 workers at every run (even silent ones). */
-const HEARTBEAT_FILE = `${AUTO_DIR}/_veille-workers.json`;
-const WATCHED_WORKERS: Array<{ key: string; label: string; staleMs: number }> = [
-  { key: 'penseur-de-nuit', label: 'Penseur de nuit', staleMs: 26 * 3600 * 1000 },
-  { key: 'chef-de-chantier', label: 'Chef de chantier', staleMs: 8 * 3600 * 1000 },
+/** Fallback heartbeats written by the PC2 workers. HTTP telemetry is finer. */
+const HEARTBEAT_DIR = `${AUTO_DIR}/_veille-workers`;
+const LEGACY_HEARTBEAT_FILE = `${AUTO_DIR}/_veille-workers.json`;
+const WATCHED_WORKERS: Array<{ key: string; label: string; liveStaleMs: number; vaultStaleMs: number }> = [
+  { key: 'chef-de-chantier', label: 'Chef de chantier', liveStaleMs: 20 * 60 * 1000, vaultStaleMs: 8 * 3600 * 1000 },
+  { key: 'portier', label: 'Portier', liveStaleMs: 20 * 60 * 1000, vaultStaleMs: 8 * 3600 * 1000 },
+  { key: 'video', label: 'Worker vidéo', liveStaleMs: 20 * 60 * 1000, vaultStaleMs: 8 * 3600 * 1000 },
+  { key: 'penseur-de-nuit', label: 'Penseur de nuit', liveStaleMs: 36 * 3600 * 1000, vaultStaleMs: 36 * 3600 * 1000 },
 ];
 
 /** Files whose fresh bullets count as "waiting for Darius". */
@@ -58,7 +61,7 @@ export interface MorningBriefDeps {
   /** Conclusions registry: settled matters never count as pending again. */
   conclusions?: ConclusionsRegistry | null;
   /** Live HTTP telemetry of the workers (their voice when git is frozen). */
-  telemetry?: (() => Record<string, { last: string; ahead?: number }>) | null;
+  telemetry?: (() => Record<string, WorkerBeat>) | null;
 }
 
 export interface BriefResult {
@@ -75,6 +78,18 @@ interface BriefState {
   bulletCounts: Record<string, number>;
 }
 
+interface WorkerBeat {
+  last?: string;
+  ahead?: number;
+  status?: string;
+  last_error?: string | null;
+  cycle_seconds?: number;
+  processed_count?: number;
+  claude_ok?: boolean;
+  git_commit?: string;
+  machine?: string;
+}
+
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
 }
@@ -88,6 +103,25 @@ function daysUntil(dateIso: string): number {
 
 function countBullets(content: string): number {
   return content.split(/\r?\n/).filter(l => /^\s*[-*]\s+\S/.test(l)).length;
+}
+
+async function readWorkerHeartbeats(vault: VaultManager): Promise<Record<string, WorkerBeat>> {
+  const beats: Record<string, WorkerBeat> = {};
+  try {
+    const legacy = JSON.parse(await vault.readFile(LEGACY_HEARTBEAT_FILE)) as Record<string, WorkerBeat>;
+    Object.assign(beats, legacy);
+  } catch {
+    /* legacy heartbeat file absent */
+  }
+  for (const worker of WATCHED_WORKERS) {
+    try {
+      const beat = JSON.parse(await vault.readFile(`${HEARTBEAT_DIR}/${worker.key}.json`)) as WorkerBeat;
+      beats[worker.key] = beat;
+    } catch {
+      /* per-worker heartbeat absent */
+    }
+  }
+  return beats;
 }
 
 /** Strip wikilinks/bold and clamp, so the line reads clean inside a push. */
@@ -250,17 +284,13 @@ export class MorningBriefService {
     // Each worker heartbeats into the vault; a stale beat raises ONE line here.
     const watchdogLines: string[] = [];
     try {
-      let hb: Record<string, { last?: string; ahead?: number }> = {};
-      try {
-        hb = JSON.parse(await vault.readFile(HEARTBEAT_FILE));
-      } catch {
-        /* no heartbeat file yet */
-      }
+      const hb = await readWorkerHeartbeats(vault);
       // Live HTTP telemetry wins over the vault file: it still speaks when the
       // git clone is frozen (the exact failure the vault channel cannot report).
       const live = this.deps.telemetry?.() ?? {};
       for (const w of WATCHED_WORKERS) {
-        const beat = live[w.key] ?? hb[w.key];
+        const liveBeat = live[w.key];
+        const beat = liveBeat ?? hb[w.key];
         const last = beat?.last;
         // Bootstrap-safe: before any heartbeat exists, only the night thinker
         // alerts (its output file proves it is supposed to run).
@@ -268,7 +298,8 @@ export class MorningBriefService {
           last !== undefined ||
           (w.key === 'penseur-de-nuit' && (await vault.fileExists(INSIGHTS_FILE)));
         if (!known) continue;
-        const stale = !last || Date.now() - Date.parse(last) > w.staleMs;
+        const staleMs = liveBeat ? w.liveStaleMs : w.vaultStaleMs;
+        const stale = !last || Date.now() - Date.parse(last) > staleMs;
         if (stale) {
           watchdogLines.push(
             `⚠️ ${w.label} : aucun battement récent (dernier : ${last ?? 'jamais'}). Vérifier PC2.`,
@@ -277,6 +308,10 @@ export class MorningBriefService {
           // Alive but its work is NOT reaching GitHub: the push verifier.
           watchdogLines.push(
             `⚠️ ${w.label} : vivant mais ${beat!.ahead} commit(s) non poussé(s). Le push de PC2 coince.`,
+          );
+        } else if (beat?.status === 'error' || beat?.last_error) {
+          watchdogLines.push(
+            `⚠️ ${w.label} : erreur worker (${clean(String(beat.last_error ?? beat.status), 90)}).`,
           );
         }
       }

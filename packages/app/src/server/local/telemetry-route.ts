@@ -13,6 +13,13 @@ import { logger } from '@/utils/logger';
 export interface WorkerBeat {
   last: string; // ISO datetime
   ahead?: number; // unpushed commits (-1 = unknown)
+  status?: string;
+  last_error?: string | null;
+  cycle_seconds?: number;
+  processed_count?: number;
+  claude_ok?: boolean;
+  git_commit?: string;
+  machine?: string;
 }
 
 const beats = new Map<string, WorkerBeat>();
@@ -43,6 +50,13 @@ export function registerTelemetryRoute(app: Express): boolean {
     beats.set(worker, {
       last: new Date().toISOString(),
       ...(Number.isFinite(ahead) ? { ahead } : {}),
+      ...(typeof req.body?.status === 'string' ? { status: req.body.status } : {}),
+      ...(typeof req.body?.last_error === 'string' ? { last_error: req.body.last_error } : {}),
+      ...(Number.isFinite(Number(req.body?.cycle_seconds)) ? { cycle_seconds: Number(req.body.cycle_seconds) } : {}),
+      ...(Number.isFinite(Number(req.body?.processed_count)) ? { processed_count: Number(req.body.processed_count) } : {}),
+      ...(typeof req.body?.claude_ok === 'boolean' ? { claude_ok: req.body.claude_ok } : {}),
+      ...(typeof req.body?.git_commit === 'string' ? { git_commit: req.body.git_commit } : {}),
+      ...(typeof req.body?.machine === 'string' ? { machine: req.body.machine } : {}),
     });
     res.status(200).json({ ok: true });
   });
