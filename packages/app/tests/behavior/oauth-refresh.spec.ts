@@ -8,6 +8,7 @@ import {
   createAuthorizationCode,
   exchangeCodeForToken,
   refreshAccessToken,
+  clearRefreshGrace,
   validateAccessToken,
   getAuthStore,
   setAuthStore,
@@ -27,6 +28,7 @@ async function grant(): Promise<{ accessToken: string; refreshToken: string; exp
 describe('OAuth refresh : le connecteur ne meurt plus toutes les heures', () => {
   beforeEach(() => {
     setAuthStore(createInMemoryAuthStore());
+    clearRefreshGrace();
   });
 
   it('le refresh survit a l expiration du token (le bug qui tuait le connecteur)', async () => {
@@ -66,5 +68,31 @@ describe('OAuth refresh : le connecteur ne meurt plus toutes les heures', () => 
   it("la duree de vie par defaut se compte en jours, plus en heures", async () => {
     const t = await grant();
     expect(t.expiresIn).toBeGreaterThan(7 * 24 * 3600);
+  });
+
+  it('un retry du meme refresh token dans la fenetre de grace recoit la MEME paire (reponse perdue)', async () => {
+    // Le tueur residuel du connecteur (matin du 2026-07-10) : le client perd la
+    // reponse du refresh (timeout, course), rejoue le meme refresh token, et
+    // recevait invalid_grant : deconnexion. La grace rend le retry idempotent.
+    const t = await grant();
+    const r1 = await refreshAccessToken(t.refreshToken);
+    expect(r1).not.toBeNull();
+    const r2 = await refreshAccessToken(t.refreshToken); // replay immediat
+    expect(r2).toEqual(r1);
+    expect(await validateAccessToken(r1!.accessToken)).toBe(true);
+  });
+
+  it('apres la fenetre de grace, le vieux refresh token est mort et la nouvelle paire vit', async () => {
+    const t = await grant();
+    const r1 = await refreshAccessToken(t.refreshToken);
+    expect(r1).not.toBeNull();
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(Date.now() + 6 * 60 * 1000); // au-dela des 5 min de grace
+      expect(await refreshAccessToken(t.refreshToken)).toBeNull(); // rotation reelle
+      expect(await refreshAccessToken(r1!.refreshToken)).not.toBeNull(); // la paire courante marche
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

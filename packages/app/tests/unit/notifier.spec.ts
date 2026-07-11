@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { NtfyNotifier, createNotifier } from '@/services/notify/notifier';
+import { NtfyNotifier, createNotifier, createNotificationJournal } from '@/services/notify/notifier';
+import type { VaultManager } from '@/services/vault-manager';
 import { configureLogger } from '@/utils/logger';
 
 beforeAll(() => {
@@ -57,6 +58,52 @@ describe('NtfyNotifier', () => {
     const notifier = new NtfyNotifier('https://ntfy.sh', 't', null, boom as any);
 
     await expect(notifier.push({ title: 'x', message: 'y' })).resolves.toBeUndefined();
+  });
+
+  it('journalise chaque push dans 08-auto/_notifications.md (la mémoire des notifs)', async () => {
+    const files = new Map<string, string>();
+    const vault = {
+      readFile: async (p: string) => {
+        const c = files.get(p);
+        if (c === undefined) throw new Error('ENOENT');
+        return c;
+      },
+      writeFile: async (p: string, c: string) => void files.set(p, c),
+    } as unknown as VaultManager;
+    const notifier = new NtfyNotifier('https://ntfy.sh', 't', null, fakeFetch([]));
+    notifier.setJournal(createNotificationJournal(vault));
+
+    await notifier.push({ title: 'Brief du matin', message: 'Priorité n°1 : AR-mesure' });
+    await notifier.push({ title: 'Rappel', message: 'Appeler mes soeurs' });
+
+    const journal = files.get('08-auto/_notifications.md')!;
+    const today = new Date().toISOString().slice(0, 10);
+    expect(journal).toContain(`## ${today}`);
+    expect(journal).toContain('**Brief du matin**');
+    expect(journal).toContain('**Rappel**');
+    // Le plus récent d'abord dans la section du jour.
+    expect(journal.indexOf('Rappel')).toBeLessThan(journal.indexOf('Brief du matin'));
+    // Une seule section pour le jour.
+    expect(journal.split(`## ${today}`)).toHaveLength(2);
+  });
+
+  it('journalise aussi les échecs de transport (ÉCHEC ntfy)', async () => {
+    const files = new Map<string, string>();
+    const vault = {
+      readFile: async () => {
+        throw new Error('ENOENT');
+      },
+      writeFile: async (p: string, c: string) => void files.set(p, c),
+    } as unknown as VaultManager;
+    const boom = async () => {
+      throw new Error('network down');
+    };
+    const notifier = new NtfyNotifier('https://ntfy.sh', 't', null, boom as any);
+    notifier.setJournal(createNotificationJournal(vault));
+
+    await notifier.push({ title: 'x', message: 'y' });
+
+    expect(files.get('08-auto/_notifications.md')).toContain('ÉCHEC ntfy');
   });
 
   it('createNotifier is disabled without NTFY_TOPIC', () => {

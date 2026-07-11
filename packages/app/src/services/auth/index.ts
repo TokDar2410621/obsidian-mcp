@@ -13,6 +13,7 @@ export {
   createAuthorizationCode,
   exchangeCodeForToken,
   refreshAccessToken,
+  clearRefreshGrace,
   validateAccessToken,
   revokeToken,
   validateClientCredentials,

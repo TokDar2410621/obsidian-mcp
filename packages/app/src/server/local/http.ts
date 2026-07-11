@@ -45,7 +45,7 @@ import { MorningBriefService } from '@/services/brief/morning-brief';
 import { scheduleMorningBrief } from '@/services/brief/morning-brief-cron';
 import { RelanceSweepService } from '@/services/relance/relance-sweep';
 import { scheduleRelanceSweep } from '@/services/relance/relance-cron';
-import { createNotifier } from '@/services/notify/notifier';
+import { createNotifier, createNotificationJournal } from '@/services/notify/notifier';
 import { registerCaptureRoute } from '@/server/local/capture-route';
 import { registerValidationRoutes } from '@/server/local/validation-route';
 import { registerTelemetryRoute, telemetrySnapshot } from '@/server/local/telemetry-route';
@@ -185,7 +185,10 @@ const reflection =
     : null;
 
 // Push channel to the human (ntfy). Null unless NTFY_TOPIC is set.
+// Every push also lands in 08-auto/_notifications.md : ntfy keeps ~12h of
+// cache, the vault keeps the memory ("what did you push to me?" is answerable).
 const notifier = createNotifier();
+notifier?.setJournal(createNotificationJournal(vaultManager));
 
 // Deterministic objective sweep (closes the vault's open loops): after each
 // reindex it confronts new/changed notes with the open objectives' unmet
