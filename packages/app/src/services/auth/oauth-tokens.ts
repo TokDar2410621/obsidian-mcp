@@ -86,12 +86,48 @@ export async function exchangeCodeForToken(
   };
 }
 
-export async function refreshAccessToken(refreshToken: string): Promise<{
+interface RefreshResponse {
   accessToken: string;
   refreshToken: string;
   expiresIn: number;
-} | null> {
+}
+
+/**
+ * Idempotent refresh retries. deleteAccessToken cascades onto the refresh
+ * token that minted it (every store does), so a successful refresh strictly
+ * rotates: the OLD refresh token dies at once. When the client loses the
+ * response (timeout, race between two refreshes), its retry replays the old
+ * token and got `invalid_grant` → the connector died needing re-authorization
+ * (seen the morning of 2026-07-10 despite the TTL fix). Within this grace
+ * window, a replay of a just-consumed refresh token re-receives the SAME new
+ * pair instead. In-memory: single-instance server, and the window is short.
+ */
+const REFRESH_GRACE_MS = Number(process.env.REFRESH_GRACE_MS || 5 * 60 * 1000);
+const recentRotations = new Map<string, { response: RefreshResponse; rotatedAt: number }>();
+
+/** Test hook: forget past rotations. */
+export function clearRefreshGrace(): void {
+  recentRotations.clear();
+}
+
+export async function refreshAccessToken(refreshToken: string): Promise<RefreshResponse | null> {
+  // A replay of a refresh token consumed moments ago is a lost-response retry,
+  // not an attack: answer it with the same pair (idempotence), don't kill the grant.
+  // Guard: the served pair must still be alive in the store. Without this, an
+  // explicitly revoked pair (revokeToken, delete cascade) could be re-served
+  // from memory during the grace window (finding of the adversarial review).
   const store = getAuthStore();
+  const replay = recentRotations.get(refreshToken);
+  if (replay) {
+    if (
+      Date.now() - replay.rotatedAt < REFRESH_GRACE_MS &&
+      (await store.getRefreshToken(replay.response.refreshToken))
+    ) {
+      logger.info('OAuth refresh replayed within grace window: same pair served');
+      return replay.response;
+    }
+    recentRotations.delete(refreshToken);
+  }
   const refreshData = await store.getRefreshToken(refreshToken);
 
   if (!refreshData) {
@@ -107,10 +143,6 @@ export async function refreshAccessToken(refreshToken: string): Promise<{
   if (oldTokenData) {
     await store.deleteAccessToken(refreshData.accessToken);
   }
-  // No strict rotation on purpose: if the client loses the response and
-  // retries with the same refresh token, a deleted token would kill the
-  // connector (the exact failure this fix removes). Single-user personal
-  // server: availability wins.
 
   const newAccessToken = generateSecureToken();
   const newRefreshToken = generateSecureToken();
@@ -126,11 +158,18 @@ export async function refreshAccessToken(refreshToken: string): Promise<{
 
   await store.setAccessToken(tokenData);
 
-  return {
+  const response: RefreshResponse = {
     accessToken: newAccessToken,
     refreshToken: newRefreshToken,
     expiresIn: Math.floor(ACCESS_TOKEN_EXPIRY / 1000),
   };
+  recentRotations.set(refreshToken, { response, rotatedAt: now });
+  if (recentRotations.size > 64) {
+    for (const [key, value] of recentRotations) {
+      if (Date.now() - value.rotatedAt >= REFRESH_GRACE_MS) recentRotations.delete(key);
+    }
+  }
+  return response;
 }
 
 export async function validateAccessToken(token: string): Promise<boolean> {

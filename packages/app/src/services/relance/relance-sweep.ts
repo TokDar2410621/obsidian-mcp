@@ -20,9 +20,15 @@ import { logger } from '@/utils/logger';
 const TACHES_DIR = '09-taches';
 const DARIUS_FILE = `${TACHES_DIR}/_darius.md`;
 const REPONSES_FILE = `${TACHES_DIR}/_reponses.md`;
+/** Recurring reminders, written by the portier from RAPPEL captures
+ *  (« rappelle-moi X chaque 2 semaines »). One line each:
+ *  `- [ ] action · chaque: Nj · prochain: AAAA-MM-JJ`. */
+const RAPPELS_FILE = `${TACHES_DIR}/_rappels.md`;
 const STATE_FILE = '08-auto/_relances-state.json';
 const STALL_DAYS = 1;
 const REASK_DAYS = 3;
+
+const RAPPEL_RE = /^(\s*-\s*\[( |x|X)\]\s*)(.+?)\s*·\s*chaque:\s*(\d+)j\s*·\s*prochain:\s*(\d{4}-\d{2}-\d{2})\s*$/;
 
 export interface RelanceItem {
   id: string;
@@ -71,6 +77,7 @@ export class RelanceSweepService {
   constructor(private readonly deps: RelanceDeps) {}
 
   async runSweep(): Promise<RelanceResult> {
+    await this.runRappels().catch(error => logger.warn('Rappels sweep failed', { error: String(error) }));
     const state = await this.loadState();
     const items = [...(await this.dariusItems()), ...(await this.pendingTasks())];
     const stalled = items
@@ -105,6 +112,48 @@ export class RelanceSweepService {
     const result: RelanceResult = { watched: items.length, stalled: stalled.length, asked };
     logger.info('Relance sweep done', { ...result });
     return result;
+  }
+
+  /**
+   * Recurring reminders: every unchecked line of `_rappels.md` whose `prochain`
+   * date is due gets ONE ntfy push, then its date is pushed one period ahead.
+   * A checked box (`- [x]`) retires the reminder for good. No per-item cron:
+   * this rides the existing daily sweep.
+   */
+  private async runRappels(): Promise<void> {
+    let content: string;
+    try {
+      content = await this.deps.vault.readFile(RAPPELS_FILE);
+    } catch {
+      return; // no reminders yet
+    }
+    const today = todayIso();
+    const dus: string[] = [];
+    let changed = false;
+    const lines = content.split(/\r?\n/).map(line => {
+      const m = RAPPEL_RE.exec(line);
+      if (!m || m[2] !== ' ') return line; // not a reminder, or retired ([x])
+      const [, prefix, , action, period, prochain] = m;
+      if (prochain > today) return line;
+      // Due (or overdue, e.g. the server slept): notify once, rebump from today.
+      dus.push(action);
+      changed = true;
+      const next = new Date(Date.parse(`${today}T00:00:00Z`) + Number(period) * 86_400_000)
+        .toISOString()
+        .slice(0, 10);
+      return `${prefix}${action} · chaque: ${period}j · prochain: ${next}`;
+    });
+    if (!changed) return;
+    if (this.deps.notify) {
+      await this.deps.notify.push({
+        title: dus.length === 1 ? 'Rappel' : `${dus.length} rappels`,
+        message: dus.map(a => `⏰ ${a}`).join('\n'),
+        priority: 4,
+        tags: ['alarm_clock'],
+      });
+    }
+    await this.deps.vault.writeFile(RAPPELS_FILE, lines.join('\n'));
+    logger.info('Rappels sweep done', { due: dus.length });
   }
 
   private answerButtons(item: RelanceItem): { label: string; url: string }[] {

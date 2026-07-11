@@ -66,6 +66,48 @@ describe('relance sweep', () => {
     });
   }
 
+  it('rappel récurrent dû : UNE notif, puis la date est repoussée d une période', async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    vault.files.set(
+      '09-taches/_rappels.md',
+      `# Rappels\n\n- [ ] Appeler mes soeurs · chaque: 14j · prochain: ${today}\n`,
+    );
+
+    await service().runSweep();
+
+    const rappelPush = notify.pushes.find(p => p.title.includes('Rappel'));
+    expect(rappelPush).toBeDefined();
+    expect(rappelPush!.message).toContain('Appeler mes soeurs');
+    const attendu = new Date(Date.parse(`${today}T00:00:00Z`) + 14 * 86_400_000)
+      .toISOString()
+      .slice(0, 10);
+    expect(vault.files.get('09-taches/_rappels.md')).toContain(`prochain: ${attendu}`);
+
+    // Deuxième passe le même jour : la date a été repoussée, plus de notif rappel.
+    notify.pushes = [];
+    await service().runSweep();
+    expect(notify.pushes.find(p => p.title.includes('Rappel'))).toBeUndefined();
+  });
+
+  it('rappel pas encore dû ou coché [x] : aucun bruit, ligne intacte', async () => {
+    vault.files.set(
+      '09-taches/_rappels.md',
+      [
+        '# Rappels',
+        '',
+        '- [ ] Payer le loyer · chaque: 30j · prochain: 2999-01-01',
+        '- [x] Vieille habitude · chaque: 7j · prochain: 2000-01-01',
+        '',
+      ].join('\n'),
+    );
+    const avant = vault.files.get('09-taches/_rappels.md');
+
+    await service().runSweep();
+
+    expect(notify.pushes.find(p => p.title.includes('Rappel'))).toBeUndefined();
+    expect(vault.files.get('09-taches/_rappels.md')).toBe(avant);
+  });
+
   it('asks WHY for the oldest stalled item, with one-tap answer buttons', async () => {
     vault.files.set(
       '09-taches/_darius.md',

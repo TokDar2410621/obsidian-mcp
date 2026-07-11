@@ -1,4 +1,5 @@
 import { logger } from '@/utils/logger';
+import type { VaultManager } from '@/services/vault-manager';
 
 /**
  * Push notifications to Darius's phone via ntfy (https://ntfy.sh) — the
@@ -38,13 +39,24 @@ type FetchLike = (
   init: { method: string; headers: Record<string, string>; body: string },
 ) => Promise<{ ok: boolean; status: number }>;
 
+/** Durable trace of a push (what the phone was told, and whether it left). */
+export type NotificationJournal = (notification: Notification, ok: boolean) => Promise<void>;
+
 export class NtfyNotifier implements NotifyPusher {
+  private journal: NotificationJournal | null = null;
+
   constructor(
     private readonly url: string,
     private readonly topic: string,
     private readonly token: string | null,
     private readonly fetchImpl: FetchLike = fetch as unknown as FetchLike,
   ) {}
+
+  /** Wire the durable journal (vault). ntfy keeps ~12h of cache: without this,
+   *  "what did you push to me?" is unanswerable (audit of 2026-07-10). */
+  setJournal(journal: NotificationJournal): void {
+    this.journal = journal;
+  }
 
   /** Fire-and-forget. Never throws — an unreachable phone must not break a sweep. */
   async push(notification: Notification): Promise<void> {
@@ -74,10 +86,62 @@ export class NtfyNotifier implements NotifyPusher {
         }),
       });
       if (!res.ok) logger.warn('ntfy push failed', { status: res.status });
+      await this.journal?.(notification, res.ok);
     } catch (error) {
       logger.warn('ntfy push failed', { error: String(error) });
+      await this.journal?.(notification, false).catch(() => undefined);
     }
   }
+}
+
+/** Vault journal of every push: `08-auto/_notifications.md`, one dated line
+ *  per notification, newest day first, capped. This is the memory of what the
+ *  cerveau told Darius — the phone's ntfy cache lasts ~12h, this lasts. */
+const JOURNAL_FILE = '08-auto/_notifications.md';
+const JOURNAL_MAX_DAYS = 30;
+
+export function createNotificationJournal(vault: VaultManager): NotificationJournal {
+  // Serialize journal writes among themselves: two near-simultaneous pushes
+  // (e.g. objective sweep + capture sweep after one webhook) would otherwise
+  // interleave their read-modify-write and one line would vanish.
+  let chain: Promise<void> = Promise.resolve();
+  const write = async (notification: Notification, ok: boolean): Promise<void> => {
+    try {
+      const now = new Date();
+      const day = now.toISOString().slice(0, 10);
+      const hm = now.toISOString().slice(11, 16);
+      const msg = notification.message.replace(/\s+/g, ' ').trim();
+      const line = `- ${hm} · **${notification.title}** · ${msg.length > 160 ? `${msg.slice(0, 157)}...` : msg}${ok ? '' : ' · ÉCHEC ntfy'}`;
+      const header = [
+        '---', 'type: note', 'tags: [auto, notifications]', '---', '',
+        '# Journal des notifications (auto)', '',
+        "> Tout ce que le cerveau a poussé sur le téléphone, heure UTC, jour par jour.",
+        "> C'est la mémoire des notifs : ntfy n'en garde que ~12 h.", '',
+      ].join('\n');
+      let body = '';
+      try {
+        const existing = await vault.readFile(JOURNAL_FILE);
+        const idx = existing.indexOf('\n## ');
+        body = idx >= 0 ? existing.slice(idx) : '';
+      } catch {
+        /* first notification ever */
+      }
+      const todayHeader = `\n## ${day}\n`;
+      if (body.startsWith(todayHeader)) {
+        body = `${todayHeader}\n${line}\n${body.slice(todayHeader.length).replace(/^\n/, '')}`;
+      } else {
+        body = `${todayHeader}\n${line}\n${body}`;
+      }
+      const sections = body.split(/\n(?=## )/).slice(0, JOURNAL_MAX_DAYS);
+      await vault.writeFile(JOURNAL_FILE, header + sections.join('\n'));
+    } catch (error) {
+      logger.warn('notification journal write failed', { error: String(error) });
+    }
+  };
+  return (notification, ok) => {
+    chain = chain.then(() => write(notification, ok));
+    return chain;
+  };
 }
 
 /** Build the notifier from env. Null (disabled) unless NTFY_TOPIC is set. */

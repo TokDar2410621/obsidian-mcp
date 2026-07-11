@@ -264,6 +264,16 @@ describe('morning brief', () => {
     expect(notify.pushes[0].message).not.toContain('Penseur de nuit');
   });
 
+  it('watchdog: lit le nouveau fichier par worker', async () => {
+    vault.files.set('08-auto/_insights.md', '# t\n\n## 2026-07-01\n\n- **[x] vieux**\n');
+    vault.files.set(
+      '08-auto/_veille-workers/penseur-de-nuit.json',
+      JSON.stringify({ worker: 'penseur-de-nuit', last: new Date().toISOString(), ahead: 0 }),
+    );
+    await service().runBrief();
+    expect(notify.pushes[0].message).not.toContain('Penseur de nuit');
+  });
+
   it('watchdog: la telemetrie HTTP en direct fait taire une alerte du fichier vault', async () => {
     // Fichier vault muet (clone gele) MAIS le worker parle en HTTP : pas d'alerte de silence.
     vault.files.set('08-auto/_insights.md', '# t\n\n## 2026-07-01\n\n- **[x] vieux**\n');

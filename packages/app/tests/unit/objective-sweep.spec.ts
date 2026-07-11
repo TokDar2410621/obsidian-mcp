@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, beforeAll } from 'vitest';
+import { describe, it, expect, beforeEach, beforeAll, vi } from 'vitest';
 import {
   ObjectiveSweepService,
   parseConditions,
@@ -212,6 +212,42 @@ describe('ObjectiveSweepService', () => {
     const proposals = vault.files.get('08-auto/_objectifs-propositions.md')!;
     expect(proposals).toContain('DÉPASSÉE');
     expect(proposals).toContain('statut: en-retard');
+  });
+
+  it('échéance proche : UNE alerte au palier, puis silence les jours suivants (fini le rappel quotidien)', async () => {
+    const in6days = new Date(Date.now() + 6 * 86_400_000).toISOString().slice(0, 10);
+    vault.files.set('00-personnel/objectif-caq.md', overdueObjective(in6days));
+
+    const first = await sweep.runSweep();
+    const second = await sweep.runSweep(); // « le lendemain » : même palier J-7
+
+    expect(first.deadlineAlerts).toBe(1);
+    expect(second.deadlineAlerts).toBe(0);
+  });
+
+  it('re-alerte au palier SUIVANT (J-3) seulement, jamais entre deux paliers', async () => {
+    const in6days = new Date(Date.now() + 6 * 86_400_000).toISOString().slice(0, 10);
+    vault.files.set('00-personnel/objectif-caq.md', overdueObjective(in6days));
+    await sweep.runSweep(); // palier J-7 consommé
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(Date.now() + 2 * 86_400_000); // échéance dans ~4 j : toujours palier J-7
+      expect((await sweep.runSweep()).deadlineAlerts).toBe(0);
+      vi.setSystemTime(Date.now() + 2 * 86_400_000); // échéance dans ~2 j : palier J-3 franchi
+      expect((await sweep.runSweep()).deadlineAlerts).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("une échéance modifiée réarme l'alerte (la date fait partie de la clé)", async () => {
+    const in6days = new Date(Date.now() + 6 * 86_400_000).toISOString().slice(0, 10);
+    const in5days = new Date(Date.now() + 5 * 86_400_000).toISOString().slice(0, 10);
+    vault.files.set('00-personnel/objectif-caq.md', overdueObjective(in6days));
+    await sweep.runSweep();
+    vault.files.set('00-personnel/objectif-caq.md', overdueObjective(in5days));
+
+    expect((await sweep.runSweep()).deadlineAlerts).toBe(1);
   });
 
   it('stays silent on deadlines when every condition is ticked', async () => {

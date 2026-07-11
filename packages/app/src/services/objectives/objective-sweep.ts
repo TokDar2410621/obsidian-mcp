@@ -18,7 +18,15 @@ const PROPOSALS_FILE = `${AUTO_DIR}/_objectifs-propositions.md`;
 // (insurance attestation vs insurance condition) scored 0.63-0.80, noise
 // clustered at 0.50-0.59. 0.60 keeps the signal, kills the noise.
 const DEFAULT_MATCH_THRESHOLD = 0.6; // cosine, tune with OBJECTIVE_MATCH_THRESHOLD
-const DEADLINE_WARN_DAYS = 7;
+/**
+ * Deadline alerts fire once per THRESHOLD, not once per day. The old dedup key
+ * embedded today's date, so the same "échéance dans N jours" re-fired every
+ * single day by construction (Darius got the CGI deadline nag daily). One
+ * alert when the deadline enters ≤7 days, another at ≤3, another at ≤1, one
+ * when overdue. A changed échéance resets the keys (the date is part of them).
+ */
+const DEADLINE_THRESHOLDS = [7, 3, 1];
+const DEADLINE_WARN_DAYS = Math.max(...DEADLINE_THRESHOLDS);
 const MAX_PROPOSAL_SECTIONS = 30; // proposals file rotation (sections kept)
 
 /** Vault folders that can never be a matching source (quarantine, templates, generated). */
@@ -212,7 +220,7 @@ export class ObjectiveSweepService {
       const days = daysUntil(objective.echeance);
       const link = `[[${objective.file.replace(/\.md$/, '')}]]`;
       if (days < 0) {
-        const key = `${objective.file}::overdue::${todayIso()}`;
+        const key = `${objective.file}::${objective.echeance}::overdue`;
         if (!state.deadlineAlerts[key]) {
           state.deadlineAlerts[key] = todayIso();
           alerts.push(
@@ -221,7 +229,9 @@ export class ObjectiveSweepService {
           );
         }
       } else if (days <= DEADLINE_WARN_DAYS) {
-        const key = `${objective.file}::soon::${todayIso()}`;
+        // The tightest crossed threshold: days=6 → J7 ; days=2 → J3 ; days=0 → J1.
+        const threshold = Math.min(...DEADLINE_THRESHOLDS.filter(t => days <= t));
+        const key = `${objective.file}::${objective.echeance}::J${threshold}`;
         if (!state.deadlineAlerts[key]) {
           state.deadlineAlerts[key] = todayIso();
           alerts.push(
