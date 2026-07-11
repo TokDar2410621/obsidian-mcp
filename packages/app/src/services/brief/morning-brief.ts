@@ -2,7 +2,7 @@ import type { VaultManager } from '@/services/vault-manager';
 import type { NotifyPusher } from '@/services/notify/notifier';
 import type { ObjectiveNote } from '@/services/objectives/objective-sweep';
 import type { ConclusionsRegistry } from '@/services/conclusions/conclusions-registry';
-import { collectDailyPropositions, cleanText } from '@/server/local/validation-route';
+import { collectDailyPropositions, cleanText, listPendingTasks } from '@/server/local/validation-route';
 import { logger } from '@/utils/logger';
 
 /**
@@ -323,6 +323,20 @@ export class MorningBriefService {
       Boolean,
     ) as string[];
     if (pendingTotal > 0) lines.push(`En attente de toi : ${pendingParts.join(', ')} (08-auto)`);
+
+    // Output loop: finished deliverables and pending resolutions never wait in
+    // silence (the demo-link task sat 5 days unseen in /revue).
+    try {
+      const tasks = await listPendingTasks(vault);
+      const livrables = tasks.filter(t => t.statut === 'a-valider').length;
+      const resolutions = tasks.length - livrables;
+      const parts: string[] = [];
+      if (livrables > 0) parts.push(`${livrables} livrable(s) prêt(s) à valider`);
+      if (resolutions > 0) parts.push(`${resolutions} résolution(s) à approuver`);
+      if (parts.length > 0) lines.push(`🎁 ${parts.join(', ')} : un tap dans Revue`);
+    } catch {
+      /* le compteur de livrables ne casse jamais le brief */
+    }
 
     if (lines.length === 0) {
       // Nothing to say beats an empty ping.
