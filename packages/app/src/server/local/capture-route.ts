@@ -1,7 +1,12 @@
 import type { Express, Request, Response } from 'express';
 import type { VaultManager } from '@/services/vault-manager';
-import { recordAnswer } from '@/services/relance/relance-sweep';
+import { recordAnswer, consumeAnswer, markAnswered } from '@/services/relance/relance-sweep';
 import { logger } from '@/utils/logger';
+
+/** Minimal HTML-escape for the one-tap confirmation page. */
+function escapeText(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 
 /**
  * Frictionless capture inbox. `POST /capture` appends an idea or a URL to a
@@ -293,10 +298,14 @@ export function registerCaptureRoute(app: Express, vault: VaultManager): boolean
   });
 
   // One-tap answer to a relance (ntfy action buttons open this in the browser).
+  // « abandonner » and « déjà fait » are EXECUTED (the loop closes in the
+  // vault at the tap), not merely recorded: a recorded-but-unconsumed answer
+  // re-nags forever (the Any Claude testimonial, 3 days).
   const CAUSES: Record<string, string> = {
     manque: 'il me manque un truc',
     peur: 'pas envie ou peur',
     abandon: 'plus pertinent, abandonner',
+    fait: 'déjà fait, déclaré par Darius',
   };
   app.get('/reponse', async (req: Request, res: Response) => {
     if ((req.query.k as string | undefined) !== token) {
@@ -312,12 +321,19 @@ export function registerCaptureRoute(app: Express, vault: VaultManager): boolean
     }
     try {
       await recordAnswer(vault, title, file, CAUSES[cause]);
-      logger.info('Relance answered', { cause, title });
+      let action: string | null = null;
+      if (cause === 'abandon' || cause === 'fait') {
+        action = await consumeAnswer(vault, cause, title, file);
+      } else {
+        await markAnswered(vault, title, file);
+        action = 'le cerveau cherche à dissoudre la cause (silence 7 jours dessus)';
+      }
+      logger.info('Relance answered', { cause, title, action });
       res.type('text/html').send(
         `<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1">` +
           `<body style="font-family:system-ui;background:#0b0f14;color:#e8edf3;display:grid;place-items:center;min-height:90vh;text-align:center">` +
           `<div><p style="font-size:2.4rem;margin:0">✓</p><p><b>Noté : ${CAUSES[cause]}.</b></p>` +
-          `<p style="color:#8b98aa">Le cerveau s'attaque à la cause, pas au symptôme.<br>Tu peux préciser en vocal : capture « pk: ... »</p></div>`,
+          `<p style="color:#8b98aa">${action ? escapeText(action) : "Le cerveau s'attaque à la cause, pas au symptôme."}<br>Tu peux préciser en vocal : capture « pk: ... »</p></div>`,
       );
     } catch (error) {
       logger.error('Relance answer failed', { error: String(error) });

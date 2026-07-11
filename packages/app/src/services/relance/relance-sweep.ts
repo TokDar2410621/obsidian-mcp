@@ -27,6 +27,9 @@ const RAPPELS_FILE = `${TACHES_DIR}/_rappels.md`;
 const STATE_FILE = '08-auto/_relances-state.json';
 const STALL_DAYS = 1;
 const REASK_DAYS = 3;
+/** After Darius ANSWERS (manque/peur), leave the dissolution engine 7 days
+ *  before asking the same cause again. An answered signal is not a stalled one. */
+const REASK_ANSWERED_DAYS = 7;
 
 const RAPPEL_RE = /^(\s*-\s*\[( |x|X)\]\s*)(.+?)\s*·\s*chaque:\s*(\d+)j\s*·\s*prochain:\s*(\d{4}-\d{2}-\d{2})\s*$/;
 
@@ -48,6 +51,14 @@ interface RelanceState {
   version: 1;
   /** item id -> last asked date (YYYY-MM-DD). */
   asked: Record<string, string>;
+  /** answerKey -> date Darius answered (manque/peur). Quiets re-asks 7 days. */
+  answered: Record<string, string>;
+}
+
+/** Stable key tying a one-tap answer back to its relance item (title is
+ *  truncated to 80 chars in the button URL, so slice before hashing). */
+export function answerKey(title: string, file: string): string {
+  return sha(`${title.slice(0, 80)}::${file}`);
 }
 
 export interface RelanceDeps {
@@ -86,24 +97,45 @@ export class RelanceSweepService {
         const last = state.asked[i.id];
         return !last || daysSince(last) >= REASK_DAYS;
       })
+      .filter(i => {
+        // Darius answered this one (manque/peur): leave the dissolution engine
+        // room to work before asking the same cause again.
+        const answeredAt = state.answered[answerKey(i.title, i.file)];
+        return !answeredAt || daysSince(answeredAt) >= REASK_ANSWERED_DAYS;
+      })
       .sort((a, b) => b.ageDays - a.ageDays);
 
     let asked: string | null = null;
     if (stalled.length > 0 && this.deps.notify) {
       const top = stalled[0];
       const others = stalled.length - 1;
-      const lines = [
-        `${top.ageDays} jour(s) sans avancement : ${top.title}`,
-        'Pourquoi ? Un tap ci-dessous, ou réponds en vocal via la capture (préfixe « pk: »).',
-      ];
-      if (others > 0) lines.push(`(${others} autre(s) en retard : ${TACHES_DIR}/)`);
-      await this.deps.notify.push({
-        title: 'Le cerveau te demande pourquoi',
-        message: lines.join('\n'),
-        priority: 4,
-        tags: ['thinking_face'],
-        actions: this.answerButtons(top),
-      });
+      if (top.kind === 'tache') {
+        // Output loop: a finished deliverable SERVES itself with its decision
+        // buttons instead of a guilt trip. One tap ends it.
+        const extrait = await this.resultExcerpt(top.file);
+        const lines = [extrait || 'Le livrable est prêt et contrôlé.', 'Valider garde, Rejeter jette.'];
+        if (others > 0) lines.push(`(${others} autre(s) en attente : Revue)`);
+        await this.deps.notify.push({
+          title: `Livrable prêt : ${top.title.replace(/^Valider : /, '').slice(0, 90)}`,
+          message: lines.join('\n'),
+          priority: 4,
+          tags: ['gift'],
+          actions: this.decisionButtons(top),
+        });
+      } else {
+        const lines = [
+          `${top.ageDays} jour(s) sans avancement : ${top.title}`,
+          'Pourquoi ? Un tap ci-dessous, ou réponds en vocal via la capture (préfixe « pk: »).',
+        ];
+        if (others > 0) lines.push(`(${others} autre(s) en retard : ${TACHES_DIR}/)`);
+        await this.deps.notify.push({
+          title: 'Le cerveau te demande pourquoi',
+          message: lines.join('\n'),
+          priority: 4,
+          tags: ['thinking_face'],
+          actions: this.answerButtons(top),
+        });
+      }
       state.asked[top.id] = todayIso();
       asked = top.title;
       await this.saveState(state);
@@ -160,11 +192,44 @@ export class RelanceSweepService {
     const { baseUrl, token } = this.deps;
     if (!token) return [];
     const base = `${baseUrl.replace(/\/+$/, '')}/reponse?k=${encodeURIComponent(token)}&t=${encodeURIComponent(item.title.slice(0, 80))}&f=${encodeURIComponent(item.file)}`;
+    // ntfy caps at 3 buttons. « Déjà fait » coche la boucle dans le vault :
+    // la déclaration de Darius EST la validation. « peur » reste dicible en pk:.
     return [
+      { label: 'Déjà fait', url: `${base}&c=fait` },
       { label: 'Il me manque un truc', url: `${base}&c=manque` },
-      { label: 'Pas envie / peur', url: `${base}&c=peur` },
       { label: 'Plus pertinent', url: `${base}&c=abandon` },
     ];
+  }
+
+  /** Valider / Rejeter d'un livrable, directement dans la notification. */
+  private decisionButtons(item: RelanceItem): { label: string; url: string }[] {
+    const { baseUrl, token } = this.deps;
+    if (!token) return [];
+    const root = baseUrl.replace(/\/+$/, '');
+    const k = encodeURIComponent(token);
+    const t = encodeURIComponent(item.file);
+    return [
+      { label: 'Valider', url: `${root}/valide?k=${k}&t=${t}` },
+      { label: 'Rejeter', url: `${root}/rejette?k=${k}&t=${t}` },
+      { label: 'Revue', url: `${root}/revue?k=${k}` },
+    ];
+  }
+
+  /** Première ligne du `## Résultat` d'une tâche : le livrable, pas le blabla. */
+  private async resultExcerpt(file: string): Promise<string | null> {
+    try {
+      const content = await this.deps.vault.readFile(file);
+      const section = /##\s*Résultat\s*\n([\s\S]*?)(?=\n## |$)/.exec(content)?.[1] ?? '';
+      const line = section
+        .split(/\r?\n/)
+        .map(l => l.trim())
+        .find(l => l && !l.startsWith('#'));
+      if (!line) return null;
+      const clean = line.replace(/^[-*>]\s*/, '').replace(/\*\*/g, '');
+      return clean.length > 160 ? `${clean.slice(0, 157)}...` : clean;
+    } catch {
+      return null;
+    }
   }
 
   /** Unchecked items of `_darius.md`: `- [ ] action (ajouté: YYYY-MM-DD)`. */
@@ -228,10 +293,10 @@ export class RelanceSweepService {
   }
 
   private async loadState(): Promise<RelanceState> {
-    const empty: RelanceState = { version: 1, asked: {} };
+    const empty: RelanceState = { version: 1, asked: {}, answered: {} };
     try {
       const parsed = JSON.parse(await this.deps.vault.readFile(STATE_FILE)) as Partial<RelanceState>;
-      return { ...empty, ...parsed, asked: parsed.asked ?? {} };
+      return { ...empty, ...parsed, asked: parsed.asked ?? {}, answered: parsed.answered ?? {} };
     } catch {
       return empty;
     }
@@ -273,4 +338,74 @@ export async function recordAnswer(
   }
   const line = `\n- ${stamp} · [${cause}] ${title} (${file})${note ? ` : ${note}` : ''}`;
   await vault.writeFile(REPONSES_FILE, header + line + body);
+}
+
+/**
+ * EXECUTE a terminal answer instead of only recording it. « abandonner » and
+ * « déjà fait » are decisions, not causes: the open loop they answer must
+ * close in the vault at the tap (the Any Claude testimonial was re-nagged for
+ * 3 days after its « abandonner » answer because nothing consumed it).
+ * Returns a short description of what happened, or null if no loop matched.
+ */
+export async function consumeAnswer(
+  vault: VaultManager,
+  cause: 'abandon' | 'fait',
+  title: string,
+  file: string,
+): Promise<string | null> {
+  const day = todayIso();
+  if (file === DARIUS_FILE) {
+    let content: string;
+    try {
+      content = await vault.readFile(DARIUS_FILE);
+    } catch {
+      return null;
+    }
+    const needle = title.toLowerCase().slice(0, 40);
+    const suffix = cause === 'fait' ? ` (fait, déclaré: ${day})` : ` (abandonné: ${day})`;
+    let hit = false;
+    const out = content.split(/\r?\n/).map(line => {
+      if (hit) return line;
+      const m = /^(\s*[-*]\s*)\[ \](\s*)(.+)$/.exec(line);
+      if (!m) return line;
+      const text = m[3].replace(/\s*\(ajout[ée]?\s*:.*?\)\s*/i, ' ').replace(/\s+/g, ' ').trim();
+      if (!text.toLowerCase().startsWith(needle)) return line;
+      hit = true;
+      return `${m[1]}[x]${m[2]}${m[3]}${suffix}`;
+    });
+    if (!hit) return null;
+    await vault.writeFile(DARIUS_FILE, out.join('\n'));
+    return cause === 'fait' ? 'coché comme fait dans ta liste' : 'coché comme abandonné dans ta liste';
+  }
+  if (/^09-taches\/[^_/][^/]*\.md$/.test(file)) {
+    let content: string;
+    try {
+      content = await vault.readFile(file);
+    } catch {
+      return null;
+    }
+    const statut = cause === 'fait' ? 'validee' : 'rejetee';
+    const next = content.replace(/^statut\s*:\s*.+$/m, `statut: ${statut}`);
+    if (next === content) return null;
+    await vault.writeFile(file, next);
+    return `tâche passée ${statut}`;
+  }
+  return null;
+}
+
+/** Note that Darius ANSWERED (manque/peur): the relance stays quiet 7 days on it. */
+export async function markAnswered(vault: VaultManager, title: string, file: string): Promise<void> {
+  let state: { version: 1; asked: Record<string, string>; answered: Record<string, string> } = {
+    version: 1,
+    asked: {},
+    answered: {},
+  };
+  try {
+    const parsed = JSON.parse(await vault.readFile(STATE_FILE)) as Partial<typeof state>;
+    state = { ...state, ...parsed, asked: parsed.asked ?? {}, answered: parsed.answered ?? {} };
+  } catch {
+    /* first answer ever */
+  }
+  state.answered[answerKey(title, file)] = todayIso();
+  await vault.writeFile(STATE_FILE, JSON.stringify(state, null, 2));
 }

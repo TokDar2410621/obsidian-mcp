@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, beforeAll } from 'vitest';
-import { RelanceSweepService, recordAnswer } from '@/services/relance/relance-sweep';
+import {
+  RelanceSweepService,
+  recordAnswer,
+  consumeAnswer,
+  markAnswered,
+} from '@/services/relance/relance-sweep';
 import type { VaultManager } from '@/services/vault-manager';
 import type { NotifyPusher, Notification } from '@/services/notify/notifier';
 import { configureLogger } from '@/utils/logger';
@@ -66,6 +71,93 @@ describe('relance sweep', () => {
     });
   }
 
+  it("consumeAnswer(abandon) COCHE l'item de _darius.md (fin du re-harcelement)", async () => {
+    vault.files.set(
+      '09-taches/_darius.md',
+      '# Liste\n\n- [ ] Envoyer le témoignage Any Claude : le brouillon est prêt (ajouté: 2000-01-01)\n- [ ] Autre action (ajouté: 2000-01-01)\n',
+    );
+
+    const action = await consumeAnswer(
+      vault,
+      'abandon',
+      'Envoyer le témoignage Any Claude : le brouillon est prêt',
+      '09-taches/_darius.md',
+    );
+
+    expect(action).toContain('abandonné');
+    const content = vault.files.get('09-taches/_darius.md')!;
+    expect(content).toContain('- [x] Envoyer le témoignage Any Claude');
+    expect(content).toContain('(abandonné:');
+    expect(content).toContain('- [ ] Autre action'); // pas touché
+    // Et la relance ne le voit plus (elle ne lit que les [ ]).
+    await service().runSweep();
+    expect(notify.pushes.find(p => p.message.includes('Any Claude'))).toBeUndefined();
+  });
+
+  it("consumeAnswer(fait) valide une tâche a-valider : la déclaration EST la validation", async () => {
+    vault.files.set(
+      '09-taches/2026-07-07-demo.md',
+      '---\ntype: tache\nstatut: a-valider\n---\n\n# Demo\n\n## Résultat\nfait\n',
+    );
+
+    const action = await consumeAnswer(vault, 'fait', 'Valider : Demo', '09-taches/2026-07-07-demo.md');
+
+    expect(action).toContain('validee');
+    expect(vault.files.get('09-taches/2026-07-07-demo.md')).toContain('statut: validee');
+  });
+
+  it('markAnswered(manque) : la relance se tait 7 jours sur cette cause', async () => {
+    vault.files.set(
+      '09-taches/_darius.md',
+      '# Liste\n\n- [ ] Envoyer le mail marchand (ajouté: 2000-01-01)\n',
+    );
+    // Premier sweep : la question part.
+    await service().runSweep();
+    expect(notify.pushes).toHaveLength(1);
+    const title = 'Envoyer le mail marchand';
+    await markAnswered(vault, title, '09-taches/_darius.md');
+    // On efface la trace « asked » pour isoler l'effet « answered ».
+    const st = JSON.parse(vault.files.get('08-auto/_relances-state.json')!);
+    st.asked = {};
+    vault.files.set('08-auto/_relances-state.json', JSON.stringify(st));
+    notify.pushes = [];
+
+    await service().runSweep();
+
+    expect(notify.pushes).toHaveLength(0); // répondu = silence, même sans « asked »
+  });
+
+  it("livrable a-valider : la relance SERT le résultat avec Valider/Rejeter, pas un pourquoi", async () => {
+    vault.files.set(
+      '09-taches/2026-07-07-demo-link.md',
+      [
+        '---',
+        'type: tache',
+        'statut: a-valider',
+        'created: 2000-01-01',
+        '---',
+        '',
+        '# Demo link AR-mesure',
+        '',
+        '## Résultat',
+        '',
+        '- Démo déployée : https://demo.example/pdp',
+        '',
+        '## Contrôle',
+        '',
+      ].join('\n'),
+    );
+
+    await service().runSweep();
+
+    expect(notify.pushes).toHaveLength(1);
+    const push = notify.pushes[0];
+    expect(push.title).toContain('Livrable prêt');
+    expect(push.message).toContain('https://demo.example/pdp');
+    expect(push.actions?.map(a => a.label)).toEqual(['Valider', 'Rejeter', 'Revue']);
+    expect(push.actions?.[0].url).toContain('/valide?k=tok&t=');
+  });
+
   it('rappel récurrent dû : UNE notif, puis la date est repoussée d une période', async () => {
     const today = new Date().toISOString().slice(0, 10);
     vault.files.set(
@@ -122,7 +214,10 @@ describe('relance sweep', () => {
     expect(push.title).toContain('pourquoi');
     expect(push.actions).toHaveLength(3);
     expect(push.actions?.[0].url).toContain('/reponse?k=tok');
-    expect(push.actions?.[0].url).toContain('c=manque');
+    // « Déjà fait » d'abord (la déclaration EST la validation), puis manque, puis abandon.
+    expect(push.actions?.map(a => a.label)).toEqual(['Déjà fait', 'Il me manque un truc', 'Plus pertinent']);
+    expect(push.actions?.[0].url).toContain('c=fait');
+    expect(push.actions?.[2].url).toContain('c=abandon');
   });
 
   it('watches a-valider tasks but ignores fresh and non-pending ones', async () => {
