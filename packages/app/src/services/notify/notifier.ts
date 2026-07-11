@@ -101,7 +101,11 @@ const JOURNAL_FILE = '08-auto/_notifications.md';
 const JOURNAL_MAX_DAYS = 30;
 
 export function createNotificationJournal(vault: VaultManager): NotificationJournal {
-  return async (notification, ok) => {
+  // Serialize journal writes among themselves: two near-simultaneous pushes
+  // (e.g. objective sweep + capture sweep after one webhook) would otherwise
+  // interleave their read-modify-write and one line would vanish.
+  let chain: Promise<void> = Promise.resolve();
+  const write = async (notification: Notification, ok: boolean): Promise<void> => {
     try {
       const now = new Date();
       const day = now.toISOString().slice(0, 10);
@@ -133,6 +137,10 @@ export function createNotificationJournal(vault: VaultManager): NotificationJour
     } catch (error) {
       logger.warn('notification journal write failed', { error: String(error) });
     }
+  };
+  return (notification, ok) => {
+    chain = chain.then(() => write(notification, ok));
+    return chain;
   };
 }
 

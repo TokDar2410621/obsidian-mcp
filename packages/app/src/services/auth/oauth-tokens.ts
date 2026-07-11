@@ -113,16 +113,21 @@ export function clearRefreshGrace(): void {
 export async function refreshAccessToken(refreshToken: string): Promise<RefreshResponse | null> {
   // A replay of a refresh token consumed moments ago is a lost-response retry,
   // not an attack: answer it with the same pair (idempotence), don't kill the grant.
+  // Guard: the served pair must still be alive in the store. Without this, an
+  // explicitly revoked pair (revokeToken, delete cascade) could be re-served
+  // from memory during the grace window (finding of the adversarial review).
+  const store = getAuthStore();
   const replay = recentRotations.get(refreshToken);
   if (replay) {
-    if (Date.now() - replay.rotatedAt < REFRESH_GRACE_MS) {
+    if (
+      Date.now() - replay.rotatedAt < REFRESH_GRACE_MS &&
+      (await store.getRefreshToken(replay.response.refreshToken))
+    ) {
       logger.info('OAuth refresh replayed within grace window: same pair served');
       return replay.response;
     }
     recentRotations.delete(refreshToken);
   }
-
-  const store = getAuthStore();
   const refreshData = await store.getRefreshToken(refreshToken);
 
   if (!refreshData) {
