@@ -158,6 +158,40 @@ describe('relance sweep', () => {
     expect(push.actions?.[0].url).toContain('/valide?k=tok&t=');
   });
 
+  it("tâche échouée : notif « Tâche échouée » avec Relancer/Abandonner, jamais le silence", async () => {
+    vault.files.set(
+      '09-taches/2026-07-10-pilote-resto.md',
+      [
+        '---',
+        'type: tache',
+        'statut: echouee',
+        'created: 2000-01-01',
+        '---',
+        '',
+        '# Monter le paquet pilote resto',
+        '',
+        '## Journal',
+        '',
+        'Erreur worker : le controleur n a pas produit son bloc CONTROLE',
+        '',
+      ].join('\n'),
+    );
+
+    await service().runSweep();
+
+    expect(notify.pushes).toHaveLength(1);
+    const push = notify.pushes[0];
+    expect(push.title).toContain('Tâche échouée');
+    expect(push.message).toContain('Erreur worker');
+    expect(push.actions?.map(a => a.label)).toEqual(['Relancer', 'Abandonner', 'Revue']);
+    expect(push.actions?.[0].url).toContain('/approuve?k=tok&t=');
+
+    // Même jour : pas de re-spam.
+    notify.pushes = [];
+    await service().runSweep();
+    expect(notify.pushes).toHaveLength(0);
+  });
+
   it('rappel récurrent dû : UNE notif, puis la date est repoussée d une période', async () => {
     const today = new Date().toISOString().slice(0, 10);
     vault.files.set(

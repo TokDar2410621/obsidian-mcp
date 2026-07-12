@@ -35,7 +35,7 @@ const RAPPEL_RE = /^(\s*-\s*\[( |x|X)\]\s*)(.+?)\s*·\s*chaque:\s*(\d+)j\s*·\s*
 
 export interface RelanceItem {
   id: string;
-  kind: 'darius' | 'tache';
+  kind: 'darius' | 'tache' | 'echec';
   title: string;
   file: string;
   ageDays: number;
@@ -109,7 +109,20 @@ export class RelanceSweepService {
     if (stalled.length > 0 && this.deps.notify) {
       const top = stalled[0];
       const others = stalled.length - 1;
-      if (top.kind === 'tache') {
+      if (top.kind === 'echec') {
+        // A dead task is a signal, never a silence. One tap relaunches it
+        // (approuvee: the chef picks it up) or buries it for good.
+        const erreur = await this.errorExcerpt(top.file);
+        const lines = [erreur || 'La tâche a échoué chez le chef de chantier.', 'Relancer la renvoie au chef ; Abandonner la jette.'];
+        if (others > 0) lines.push(`(${others} autre(s) en attente : Revue)`);
+        await this.deps.notify.push({
+          title: `Tâche échouée : ${top.title.slice(0, 90)}`,
+          message: lines.join('\n'),
+          priority: 4,
+          tags: ['boom'],
+          actions: this.relaunchButtons(top),
+        });
+      } else if (top.kind === 'tache') {
         // Output loop: a finished deliverable SERVES itself with its decision
         // buttons instead of a guilt trip. One tap ends it.
         const extrait = await this.resultExcerpt(top.file);
@@ -215,6 +228,33 @@ export class RelanceSweepService {
     ];
   }
 
+  /** Relancer (statut approuvee, le chef la reprend) ou abandonner une tâche morte. */
+  private relaunchButtons(item: RelanceItem): { label: string; url: string }[] {
+    const { baseUrl, token } = this.deps;
+    if (!token) return [];
+    const root = baseUrl.replace(/\/+$/, '');
+    const k = encodeURIComponent(token);
+    const t = encodeURIComponent(item.file);
+    return [
+      { label: 'Relancer', url: `${root}/approuve?k=${k}&t=${t}` },
+      { label: 'Abandonner', url: `${root}/rejette?k=${k}&t=${t}` },
+      { label: 'Revue', url: `${root}/revue?k=${k}` },
+    ];
+  }
+
+  /** Dernière erreur du `## Journal` d'une tâche échouée. */
+  private async errorExcerpt(file: string): Promise<string | null> {
+    try {
+      const content = await this.deps.vault.readFile(file);
+      const m = content.match(/^.*(?:Erreur worker|NON CONFORME|erreur)\s*:?.*$/gim);
+      if (!m || m.length === 0) return null;
+      const line = m[0].trim();
+      return line.length > 160 ? `${line.slice(0, 157)}...` : line;
+    } catch {
+      return null;
+    }
+  }
+
   /** Première ligne du `## Résultat` d'une tâche : le livrable, pas le blabla. */
   private async resultExcerpt(file: string): Promise<string | null> {
     try {
@@ -278,13 +318,18 @@ export class RelanceSweepService {
       } catch {
         continue;
       }
-      if (!/^statut\s*:\s*a-valider\s*$/m.test(content)) continue;
+      const statut = /^statut\s*:\s*(\S+)\s*$/m.exec(content)?.[1] ?? '';
+      // a-valider: a deliverable waits for a decision. echouee: a task DIED
+      // and nothing used to say so (the resto pilot failed on 2026-07-10 and
+      // stayed invisible until a hand-audit found it).
+      if (statut !== 'a-valider' && statut !== 'echouee') continue;
       const title = /^#\s+(.+)$/m.exec(content)?.[1]?.trim() ?? base;
       const created = /^created\s*:\s*(\d{4}-\d{2}-\d{2})/m.exec(content)?.[1];
+      const echec = statut === 'echouee';
       items.push({
-        id: `tache::${sha(file)}`,
-        kind: 'tache',
-        title: `Valider : ${title}`,
+        id: `${echec ? 'echec' : 'tache'}::${sha(file)}`,
+        kind: echec ? 'echec' : 'tache',
+        title: echec ? title : `Valider : ${title}`,
         file,
         ageDays: created ? daysSince(created) : STALL_DAYS,
       });

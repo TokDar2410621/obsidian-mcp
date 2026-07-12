@@ -218,7 +218,12 @@ export async function listPendingTasks(vault: VaultManager): Promise<PendingTask
     const risque = (/^risque\s*:\s*(.*)$/m.exec(content)?.[1] ?? '').trim();
     // a-valider: done and verified, awaiting keep/drop.
     // proposee + validation-requise: risky, awaiting approval (sans-risque runs alone).
-    const awaits = statut === 'a-valider' || (statut === 'proposee' && risque === 'validation-requise');
+    // echouee: dead at the chef's hands, awaiting relaunch or burial (a dead
+    // task must never be invisible: the resto pilot stayed silent for a day).
+    const awaits =
+      statut === 'a-valider' ||
+      statut === 'echouee' ||
+      (statut === 'proposee' && risque === 'validation-requise');
     if (!awaits) continue;
     const title = (/^#\s+(.+)$/m.exec(content)?.[1] ?? base).trim();
     out.push({ path: rel, title, statut, risque });
@@ -512,8 +517,11 @@ export function registerValidationRoutes(
           const primary =
             t.statut === 'a-valider'
               ? `<a class="btn ok" href="/valide?k=${k}&t=${tp}">Valider</a>`
-              : `<a class="btn go" href="/approuve?k=${k}&t=${tp}">Approuver</a>`;
-          const tag = t.statut === 'a-valider' ? 'à valider' : 'risqué, à approuver';
+              : t.statut === 'echouee'
+                ? `<a class="btn go" href="/approuve?k=${k}&t=${tp}">Relancer</a>`
+                : `<a class="btn go" href="/approuve?k=${k}&t=${tp}">Approuver</a>`;
+          const tag =
+            t.statut === 'a-valider' ? 'à valider' : t.statut === 'echouee' ? 'échouée, à relancer' : 'risqué, à approuver';
           return `<div class="card"><span class="tag">tâche · ${tag}</span>
             <p class="txt">${escapeHtml(t.title)}</p>
             <div class="row">${primary}
