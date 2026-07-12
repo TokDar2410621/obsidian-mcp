@@ -329,10 +329,12 @@ export class MorningBriefService {
     try {
       const tasks = await listPendingTasks(vault);
       const livrables = tasks.filter(t => t.statut === 'a-valider').length;
-      const resolutions = tasks.length - livrables;
+      const echouees = tasks.filter(t => t.statut === 'echouee').length;
+      const resolutions = tasks.length - livrables - echouees;
       const parts: string[] = [];
       if (livrables > 0) parts.push(`${livrables} livrable(s) prêt(s) à valider`);
       if (resolutions > 0) parts.push(`${resolutions} résolution(s) à approuver`);
+      if (echouees > 0) parts.push(`${echouees} tâche(s) échouée(s) à relancer`);
       if (parts.length > 0) lines.push(`🎁 ${parts.join(', ')} : un tap dans Revue`);
     } catch {
       /* le compteur de livrables ne casse jamais le brief */
