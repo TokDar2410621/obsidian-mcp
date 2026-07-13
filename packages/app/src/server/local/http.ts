@@ -405,6 +405,11 @@ Configure ChatGPT/Claude with:
 // clean shutdown, so the crash emails stop. Also drains in-flight requests.
 const shutdown = (signal: string): void => {
   console.log(`Graceful shutdown on ${signal}`);
+  // Flush the batched internal-state writes before dying (best effort within
+  // the drain window): a redeploy must not lose sweep states or the journal.
+  vaultManager
+    .flushLazy?.()
+    .catch(error => console.log(`Lazy flush on shutdown failed: ${String(error)}`));
   server.close(() => process.exit(0));
   // Safety net if a keep-alive socket holds the server open.
   setTimeout(() => process.exit(0), 8000).unref();

@@ -1,5 +1,6 @@
 import { logger } from '@/utils/logger';
 import type { VaultManager } from '@/services/vault-manager';
+import { writeStateFile } from '@/services/vault-manager';
 
 /**
  * Push notifications to Darius's phone via ntfy (https://ntfy.sh) — the
@@ -133,7 +134,7 @@ export function createNotificationJournal(vault: VaultManager): NotificationJour
         body = `${todayHeader}\n${line}\n${body}`;
       }
       const sections = body.split(/\n(?=## )/).slice(0, JOURNAL_MAX_DAYS);
-      await vault.writeFile(JOURNAL_FILE, header + sections.join('\n'));
+      await writeStateFile(vault, JOURNAL_FILE, header + sections.join('\n'));
     } catch (error) {
       logger.warn('notification journal write failed', { error: String(error) });
     }
