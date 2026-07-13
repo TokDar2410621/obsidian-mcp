@@ -33,6 +33,17 @@ export class GitVaultManager implements VaultManager {
   /** Tail of the serialized operation chain (see {@link runExclusive}). */
   private opChain: Promise<unknown> = Promise.resolve();
 
+  /**
+   * Pending INTERNAL-STATE writes (sweep states, echoes, journals), flushed
+   * as ONE commit every few minutes instead of one commit each. Measured on
+   * 2026-07-12: 79 of 141 daily server commits were just `_echos.md` and
+   * `_objectifs-sweep.json` churn; every one of those pushes raced the PC2
+   * workers' pushes (three backlog outages in three days) and re-triggered
+   * the webhook chain. Batching cuts the storm at the source.
+   */
+  private lazyPending = new Map<string, string>();
+  private lazyTimer: ReturnType<typeof setTimeout> | null = null;
+
   constructor(config: VaultConfig) {
     this.config = config;
   }
@@ -241,6 +252,10 @@ export class GitVaultManager implements VaultManager {
    * Read a file from the vault
    */
   async readFile(relativePath: string): Promise<string> {
+    // A pending lazy write IS the current content: its author must read
+    // back what it wrote, even before the batched flush hits the disk.
+    const pending = this.lazyPending.get(relativePath);
+    if (pending !== undefined) return pending;
     return this.runExclusive(async () => {
       await this.initialize();
       const fullPath = path.join(this.config.vaultPath, relativePath);
@@ -254,6 +269,67 @@ export class GitVaultManager implements VaultManager {
   }
 
   /**
+   * Write an INTERNAL-STATE file lazily: the content is served by readFile
+   * immediately, but the disk write + commit + push happen in ONE batched
+   * commit (a few minutes later, or sooner when the batch grows). Use it for
+   * state artifacts nobody waits on (sweep states, echoes, journals), never
+   * for user-facing note edits.
+   */
+  async writeFileLazy(relativePath: string, content: string): Promise<void> {
+    this.lazyPending.set(relativePath, stripEmDash(relativePath, content));
+    if (this.lazyPending.size >= GitVaultManager.LAZY_MAX_PENDING) {
+      await this.flushLazy();
+      return;
+    }
+    if (!this.lazyTimer) {
+      this.lazyTimer = setTimeout(() => {
+        this.flushLazy().catch(error =>
+          logger.warn('Lazy state flush failed', { error: String(error) }),
+        );
+      }, GitVaultManager.LAZY_FLUSH_MS);
+      // Never keep the process alive just for a state flush.
+      (this.lazyTimer as any).unref?.();
+    }
+  }
+
+  /** Flush all pending lazy writes as a single commit. Safe to call anytime. */
+  async flushLazy(): Promise<void> {
+    if (this.lazyPending.size === 0) return;
+    return this.runExclusive(async () => {
+      if (this.lazyPending.size === 0) return;
+      if (this.lazyTimer) {
+        clearTimeout(this.lazyTimer);
+        this.lazyTimer = null;
+      }
+      await this.initialize();
+      const entries = [...this.lazyPending.entries()];
+      this.lazyPending.clear();
+      try {
+        for (const [rel, content] of entries) {
+          const fullPath = path.join(this.config.vaultPath, rel);
+          await fs.mkdir(path.dirname(fullPath), { recursive: true });
+          await fs.writeFile(fullPath, content, 'utf-8');
+        }
+        await this.commitAndPush(
+          `Etat interne: ${entries.length} fichier(s) (batch)`,
+          entries.map(([rel]) => rel),
+        );
+        logger.debug('Lazy state flushed', { files: entries.length });
+      } catch (error) {
+        // Echec de commit/push : on garde l'etat pour le prochain flush
+        // (sans ecraser une version plus recente arrivee entre-temps).
+        for (const [rel, content] of entries) {
+          if (!this.lazyPending.has(rel)) this.lazyPending.set(rel, content);
+        }
+        throw error;
+      }
+    });
+  }
+
+  private static readonly LAZY_FLUSH_MS = Number(process.env.STATE_FLUSH_MS || 5 * 60 * 1000);
+  private static readonly LAZY_MAX_PENDING = 8;
+
+  /**
    * Write content to a file
    * Automatically commits and pushes the change
    */
@@ -265,6 +341,7 @@ export class GitVaultManager implements VaultManager {
       const dir = path.dirname(fullPath);
       await fs.mkdir(dir, { recursive: true });
 
+      this.lazyPending.delete(relativePath); // l'ecriture directe supplante la lazy
       await fs.writeFile(fullPath, stripEmDash(relativePath, content), 'utf-8');
       await this.commitAndPush(`Update file: ${relativePath}`, [relativePath]);
 

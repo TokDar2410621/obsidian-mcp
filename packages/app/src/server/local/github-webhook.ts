@@ -5,6 +5,7 @@ import type { GraphService } from '@/services/graph';
 import type { ObjectiveSweepService } from '@/services/objectives/objective-sweep';
 import type { CaptureLinkSweepService } from '@/services/captures/capture-link-sweep';
 import type { VaultManager } from '@/services/vault-manager';
+import { writeStateFile } from '@/services/vault-manager';
 import type { ReflectionService } from '@/services/reflection/reflection-service';
 import { logger } from '@/utils/logger';
 
@@ -165,7 +166,7 @@ export function registerGithubWebhook(
             }
             const existing = await vault.readFile(ECHOS_FILE).catch(() => '');
             const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
-            await vault.writeFile(ECHOS_FILE, renderEchos(existing, stamp, changed, echoes));
+            await writeStateFile(vault, ECHOS_FILE, renderEchos(existing, stamp, changed, echoes));
             logger.info('Echoes written (spreading activation)', {
               triggers: changed.length,
               echoes: echoes.length,

@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import type { VaultManager } from '@/services/vault-manager';
+import { writeStateFile } from '@/services/vault-manager';
 import type { EmbeddedChunk } from '@/services/rag/types';
 import type { NotifyPusher } from '@/services/notify/notifier';
 import type { SweepRag } from '@/services/objectives/objective-sweep';
@@ -198,7 +199,7 @@ export class CaptureLinkSweepService {
   }
 
   private async saveState(state: LinkState): Promise<void> {
-    await this.deps.vault.writeFile(STATE_FILE, JSON.stringify(state, null, 2));
+    await writeStateFile(this.deps.vault, STATE_FILE, JSON.stringify(state, null, 2));
   }
 
   private async appendProposals(proposals: string[]): Promise<void> {

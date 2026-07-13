@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import type { VaultManager } from '@/services/vault-manager';
+import { writeStateFile } from '@/services/vault-manager';
 import type { NotifyPusher } from '@/services/notify/notifier';
 import { logger } from '@/utils/logger';
 
@@ -348,7 +349,7 @@ export class RelanceSweepService {
   }
 
   private async saveState(state: RelanceState): Promise<void> {
-    await this.deps.vault.writeFile(STATE_FILE, JSON.stringify(state, null, 2));
+    await writeStateFile(this.deps.vault, STATE_FILE, JSON.stringify(state, null, 2));
   }
 }
 
@@ -452,5 +453,5 @@ export async function markAnswered(vault: VaultManager, title: string, file: str
     /* first answer ever */
   }
   state.answered[answerKey(title, file)] = todayIso();
-  await vault.writeFile(STATE_FILE, JSON.stringify(state, null, 2));
+  await writeStateFile(vault, STATE_FILE, JSON.stringify(state, null, 2));
 }
