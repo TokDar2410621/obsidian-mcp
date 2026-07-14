@@ -38,8 +38,10 @@ class FakeGenerator implements AnswerGenerator {
   lastContexts: GenContext[] = [];
   async generate(question: string, contexts: GenContext[]): Promise<GenResult> {
     this.lastContexts = contexts;
+    // Comme le vrai modèle conforme : chaque source citée en wikilink Obsidian
+    // (le contrôle d'ancrage rejette toute réponse sans citation).
     return {
-      answer: `À propos de "${question}": ${contexts.map(c => c.wikilink).join(', ')}`,
+      answer: `À propos de "${question}": ${contexts.map(c => `[[${c.wikilink}]]`).join(', ')}`,
       refused: false,
     };
   }
@@ -135,6 +137,27 @@ describe('RAG — ask-cerveau', () => {
     expect(generator.lastContexts.length).toBeGreaterThan(0);
     expect(res.data.citations[0].wikilink).toBe('redis-pattern');
     expect(res.data.used_chunks).toBe(res.data.citations.length);
+  });
+
+  it('remplace par le refus une réponse qui ne cite aucune note (savoir général déguisé)', async () => {
+    const generator: AnswerGenerator = {
+      model: 'bavard-sans-sources',
+      async generate() {
+        return { answer: 'Redis est une base clé-valeur inventée en 2009.', refused: false };
+      },
+    };
+    const rag = new RagService({
+      reader: makeReader(VAULT()),
+      embedder: new FakeEmbedder(),
+      generator,
+      indexFile: '/unused',
+      persist: false,
+    });
+
+    const res = await rag.askCerveau({ question: 'parle moi de redis' });
+    expect(res.success).toBe(true);
+    expect(res.data.answer).toContain('Je ne trouve pas ça dans le cerveau');
+    expect(res.data.citations).toEqual([]);
   });
 
   it('fails clearly when no generator is configured', async () => {

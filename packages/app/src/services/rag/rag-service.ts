@@ -3,6 +3,7 @@ import path from 'path';
 import { chunkNote, toWikilink } from '@/services/rag/chunker';
 import { dot, normalize } from '@/services/rag/cosine';
 import { BM25Index, rrf } from '@/services/rag/bm25';
+import { REFUS_HORS_CERVEAU } from '@/services/rag/generator';
 import type { Reranker } from '@/services/rag/reranker';
 import type { SettingsStore } from '@/services/settings/settings-store';
 import type {
@@ -23,6 +24,35 @@ const MAX_TOP_K = 30;
 const MAX_CONTEXT_CHARS = 12000; // budget for ask-cerveau prompt context
 const EXCERPT_CHARS = 240;
 const RERANK_POOL = 24; // shortlist size handed to the reranker
+
+/**
+ * Strict grounding for ask-cerveau (Darius, 2026-07-13 : « je veux que les
+ * réponses de l'interface graphique proviennent juste du cerveau »).
+ * Below this dense cosine, a chunk is off-topic padding the model would
+ * embroider on. Tunable via ASK_MIN_SCORE.
+ */
+const ASK_MIN_SCORE = Number(process.env.ASK_MIN_SCORE || 0.25);
+
+/** Keep only hits similar enough to the question to ground an answer. */
+export function filtrerPertinents<T extends { score: number }>(hits: T[], min = ASK_MIN_SCORE): T[] {
+  return hits.filter(h => h.score >= min);
+}
+
+/**
+ * An answer is grounded when it cites at least one of the provided notes
+ * (wikilink match, alias and heading tolerated) or is an explicit refusal.
+ * No citation = general knowledge in disguise: rejected.
+ */
+export function estAncree(answer: string, wikilinks: string[]): boolean {
+  const texte = answer.trim();
+  if (texte.length === 0) return false;
+  if (/je ne trouve (pas|rien)/i.test(texte)) return true; // refus explicite
+  const fournis = new Set(wikilinks.map(w => w.toLowerCase()));
+  for (const m of texte.matchAll(/\[\[([^\]|#]+)/g)) {
+    if (fournis.has(m[1].trim().toLowerCase())) return true;
+  }
+  return false;
+}
 // Motivated recall nudges (bounded: they re-sort the pool, never invent hits).
 const MOTIVATION_ALPHA = 0.25; // weight of cosine(chunk, priorities+fears)
 const STRENGTH_BETA = 0.15; // weight of the memory-strength trace (0..2 → 0..1)
@@ -305,10 +335,15 @@ export class RagService {
       }
       await this.ensureReady();
 
-      const hits = await this.retrieve(args.question, args);
+      // Verrou 1 : plancher de pertinence. La recherche renvoie toujours
+      // QUELQUE CHOSE (top-k) ; sans plancher, la branche « rien trouvé » ne
+      // s'activait jamais et le modèle brodait sur des extraits hors sujet.
+      // hit.score est le cosinus dense pur (0..1), comparable d'une question
+      // à l'autre.
+      const hits = filtrerPertinents(await this.retrieve(args.question, args));
       if (hits.length === 0) {
         return ok({
-          answer: 'Je ne trouve rien de pertinent dans tes notes pour cette question.',
+          answer: "Je ne trouve rien d'assez pertinent dans le cerveau pour répondre à ça.",
           citations: [],
           used_chunks: 0,
         });
@@ -318,6 +353,17 @@ export class RagService {
       const result = await this.generator.generate(await this.withLearnings(args.question), contexts);
       if (result.refused) {
         return fail("La génération n'a produit aucune réponse exploitable.");
+      }
+
+      // Verrou 2 : contrôle d'ancrage. Une réponse qui ne cite aucune des
+      // notes fournies ne PEUT PAS venir du cerveau : on la remplace par le
+      // refus au lieu de servir du savoir général déguisé.
+      if (!estAncree(result.answer, contexts.map(c => c.wikilink))) {
+        return ok({
+          answer: REFUS_HORS_CERVEAU,
+          citations: [],
+          used_chunks: 0,
+        });
       }
 
       try {
