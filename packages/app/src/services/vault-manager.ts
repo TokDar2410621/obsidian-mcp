@@ -7,6 +7,12 @@ export interface VaultManager {
   writeFileLazy?(relativePath: string, content: string): Promise<void>;
   /** Optional: flush pending lazy writes now (shutdown, tests). */
   flushLazy?(): Promise<void>;
+  /**
+   * Optional: bulk read (ONE sync then plain disk reads). Implemented by
+   * GitVaultManager; fakes fall back to per-file readFile via
+   * {@link readAllFiles}. Unreadable files are silently skipped.
+   */
+  readManyFiles?(relativePaths: string[]): Promise<Map<string, string>>;
   readFile(relativePath: string): Promise<string>;
   writeFile(relativePath: string, content: string): Promise<void>;
   deleteFile(relativePath: string): Promise<void>;
@@ -38,4 +44,25 @@ export function writeStateFile(
 ): Promise<void> {
   if (vault.writeFileLazy) return vault.writeFileLazy(relativePath, content);
   return vault.writeFile(relativePath, content);
+}
+
+
+/**
+ * Bulk read with graceful fallback: one exclusive sync when the vault supports
+ * it, per-file reads otherwise (fakes, tests). Unreadable files are skipped.
+ */
+export async function readAllFiles(
+  vault: VaultManager,
+  relativePaths: string[],
+): Promise<Map<string, string>> {
+  if (vault.readManyFiles) return vault.readManyFiles(relativePaths);
+  const out = new Map<string, string>();
+  for (const rel of relativePaths) {
+    try {
+      out.set(rel, await vault.readFile(rel));
+    } catch {
+      /* skipped */
+    }
+  }
+  return out;
 }

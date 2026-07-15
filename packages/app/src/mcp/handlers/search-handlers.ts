@@ -1,7 +1,6 @@
 import Fuse from 'fuse.js';
-import { VaultManager } from '@/services/vault-manager';
+import { VaultManager, readAllFiles } from '@/services/vault-manager';
 import type { ToolResponse } from './types';
-import { logger } from '@/utils/logger';
 
 interface SearchResult {
   path: string;
@@ -111,30 +110,18 @@ async function performFuzzySearch(
     });
   }
 
-  // Now search file contents
+  // Now search file contents.
+  // ONE bulk read: the per-file readFile path costs a full git sync EACH
+  // (serialized), which timed out past a few hundred notes (2026-07-15).
   const contentItems: FileSearchItem[] = [];
-
-  // Read files in batches
-  const batchSize = 10;
-  for (let i = 0; i < files.length && results.length < limit; i += batchSize) {
-    const batch = files.slice(i, i + batchSize);
-
-    await Promise.all(
-      batch.map(async path => {
-        try {
-          const content = await vault.readFile(path);
-          const lines = content.split('\n');
-          contentItems.push({
-            path,
-            filename: path.split('/').pop() || path,
-            content,
-            lines,
-          });
-        } catch (error) {
-          logger.warn(`Error reading file during search`, { path, error });
-        }
-      }),
-    );
+  const contents = await readAllFiles(vault, files);
+  for (const [path, content] of contents) {
+    contentItems.push({
+      path,
+      filename: path.split('/').pop() || path,
+      content,
+      lines: content.split('\n'),
+    });
   }
 
   // Fuzzy search content
@@ -193,40 +180,18 @@ async function performExactSearch(
     }
   }
 
-  // Search file contents
-  const batchSize = 10;
-  for (let i = 0; i < files.length && results.length < limit; i += batchSize) {
-    const batch = files.slice(i, i + batchSize);
-
-    const batchResults = await Promise.all(
-      batch.map(async path => {
-        try {
-          const content = await vault.readFile(path);
-          const lines = content.split('\n');
-
-          const matchingLines = findMatchingLines(lines, query, true);
-
-          if (matchingLines.length > 0) {
-            return {
-              path,
-              match_type: 'content' as const,
-              relevance_score: calculateExactScore(query, matchingLines),
-              matches: matchingLines,
-            };
-          }
-
-          return null;
-        } catch (error) {
-          logger.warn(`Error searching file`, { path, error });
-          return null;
-        }
-      }),
-    );
-
-    for (const result of batchResults) {
-      if (result && results.length < limit) {
-        results.push(result);
-      }
+  // Search file contents (ONE bulk read, same fix as the fuzzy path).
+  const contents = await readAllFiles(vault, files);
+  for (const [path, content] of contents) {
+    if (results.length >= limit) break;
+    const matchingLines = findMatchingLines(content.split('\n'), query, true);
+    if (matchingLines.length > 0) {
+      results.push({
+        path,
+        match_type: 'content' as const,
+        relevance_score: calculateExactScore(query, matchingLines),
+        matches: matchingLines,
+      });
     }
   }
 
