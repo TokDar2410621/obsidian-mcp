@@ -269,6 +269,33 @@ export class GitVaultManager implements VaultManager {
   }
 
   /**
+   * Read MANY files in one exclusive operation: a single sync (fetch + reset),
+   * then plain disk reads. The per-file readFile path costs one full git sync
+   * EACH (serialized): search-vault reading ~900 notes that way took minutes
+   * and timed out (diagnosed 2026-07-15). Unreadable files are skipped.
+   * Pending lazy writes overlay the disk content, like readFile.
+   */
+  async readManyFiles(relativePaths: string[]): Promise<Map<string, string>> {
+    return this.runExclusive(async () => {
+      await this.initialize();
+      const out = new Map<string, string>();
+      for (const rel of relativePaths) {
+        const pending = this.lazyPending.get(rel);
+        if (pending !== undefined) {
+          out.set(rel, pending);
+          continue;
+        }
+        try {
+          out.set(rel, await fs.readFile(path.join(this.config.vaultPath, rel), 'utf-8'));
+        } catch {
+          /* skipped: deleted or unreadable during the scan */
+        }
+      }
+      return out;
+    });
+  }
+
+  /**
    * Write an INTERNAL-STATE file lazily: the content is served by readFile
    * immediately, but the disk write + commit + push happen in ONE batched
    * commit (a few minutes later, or sooner when the batch grows). Use it for
