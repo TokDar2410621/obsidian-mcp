@@ -366,11 +366,13 @@ export class MorningBriefService {
         }
         actions.push({ label: 'Revue', url: `${base}/revue?k=${encodeURIComponent(token)}` });
       }
+      const revue = actions.find(a => a.label === 'Revue')?.url;
       await this.deps.notify.push({
         title: 'Brief du matin',
         message: lines.join('\n'),
         priority: deadlineLine?.includes('DÉPASSÉE') ? 4 : 3,
         tags: ['sunrise'],
+        ...(revue ? { click: revue } : {}),
         ...(actions.length ? { actions } : {}),
       });
     }

@@ -121,6 +121,7 @@ export class RelanceSweepService {
           message: lines.join('\n'),
           priority: 4,
           tags: ['boom'],
+          click: this.revueUrl(),
           actions: this.relaunchButtons(top),
         });
       } else if (top.kind === 'tache') {
@@ -134,6 +135,7 @@ export class RelanceSweepService {
           message: lines.join('\n'),
           priority: 4,
           tags: ['gift'],
+          click: this.revueUrl(),
           actions: this.decisionButtons(top),
         });
       } else {
@@ -147,6 +149,7 @@ export class RelanceSweepService {
           message: lines.join('\n'),
           priority: 4,
           tags: ['thinking_face'],
+          click: this.revueUrl(),
           actions: this.answerButtons(top),
         });
       }
@@ -196,10 +199,17 @@ export class RelanceSweepService {
         message: dus.map(a => `⏰ ${a}`).join('\n'),
         priority: 4,
         tags: ['alarm_clock'],
+          click: this.revueUrl(),
       });
     }
     await this.deps.vault.writeFile(RAPPELS_FILE, lines.join('\n'));
     logger.info('Rappels sweep done', { due: dus.length });
+  }
+
+  private revueUrl(): string | undefined {
+    const { baseUrl, token } = this.deps;
+    if (!token) return undefined;
+    return `${baseUrl.replace(/\/+$/, '')}/revue?k=${encodeURIComponent(token)}`;
   }
 
   private answerButtons(item: RelanceItem): { label: string; url: string }[] {
@@ -250,7 +260,7 @@ export class RelanceSweepService {
       const m = content.match(/^.*(?:Erreur worker|NON CONFORME|erreur)\s*:?.*$/gim);
       if (!m || m.length === 0) return null;
       const line = m[0].trim();
-      return line.length > 160 ? `${line.slice(0, 157)}...` : line;
+      return line.length > 300 ? `${line.slice(0, 297)}...` : line;
     } catch {
       return null;
     }
@@ -267,7 +277,7 @@ export class RelanceSweepService {
         .find(l => l && !l.startsWith('#'));
       if (!line) return null;
       const clean = line.replace(/^[-*>]\s*/, '').replace(/\*\*/g, '');
-      return clean.length > 160 ? `${clean.slice(0, 157)}...` : clean;
+      return clean.length > 420 ? `${clean.slice(0, 417)}...` : clean;
     } catch {
       return null;
     }

@@ -41,6 +41,17 @@ describe('NtfyNotifier', () => {
     expect(sent[0].headers.authorization).toBeUndefined();
   });
 
+  it('transmet le click (tap du corps = Revue, fiable sur iOS)', async () => {
+    const sent: Sent[] = [];
+    const notifier = new NtfyNotifier('https://ntfy.sh', 't', null, fakeFetch(sent));
+
+    await notifier.push({ title: 'x', message: 'y', click: 'https://cerveau.example/revue?k=tok' });
+    await notifier.push({ title: 'sans-click', message: 'z' });
+
+    expect(sent[0].body.click).toBe('https://cerveau.example/revue?k=tok');
+    expect(sent[1].body.click).toBeUndefined();
+  });
+
   it('sends a Bearer token when configured', async () => {
     const sent: Sent[] = [];
     const notifier = new NtfyNotifier('https://ntfy.example.com', 't', 'tok123', fakeFetch(sent));
