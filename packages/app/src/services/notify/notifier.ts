@@ -23,6 +23,9 @@ export interface NotificationAction {
 export interface Notification {
   title: string;
   message: string;
+  /** URL opened when the notification BODY is tapped. Reliable everywhere,
+   *  including iOS where action buttons are flaky (Darius, 2026-07-17). */
+  click?: string;
   /** ntfy priority 1 (min) .. 5 (urgent). Default 3. */
   priority?: number;
   /** ntfy tags — emoji shortcodes ('brain', 'dart') or plain labels. */
@@ -74,6 +77,7 @@ export class NtfyNotifier implements NotifyPusher {
           message: notification.message,
           priority: notification.priority ?? 3,
           tags: notification.tags ?? [],
+          ...(notification.click ? { click: notification.click } : {}),
           ...(notification.actions && notification.actions.length > 0
             ? {
                 actions: notification.actions.slice(0, 3).map(a => ({
