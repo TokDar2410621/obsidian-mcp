@@ -42,6 +42,16 @@ export const PROP_SOURCES: PropSource[] = [
     demandPrefix: 'Donne suite a cet insight du penseur de nuit',
   },
   {
+    file: `${AUTO_DIR}/_ponts.md`,
+    label: 'pont',
+    demandPrefix: 'Donne suite a ce pont du courtier',
+  },
+  {
+    file: `${AUTO_DIR}/_dissonances.md`,
+    label: 'dissonance',
+    demandPrefix: 'Donne suite a cette dissonance',
+  },
+  {
     file: `${AUTO_DIR}/_captures-liens.md`,
     label: 'lien',
     demandPrefix: 'Donne suite a ce lien capte',
@@ -83,6 +93,42 @@ export interface Proposition {
   label: string;
   text: string;
   hash: string;
+  /** Named RANG axes parsed from an `Axes:` continuation line (ponts/dissonances).
+   * Present only when the proposal carries them; it is what feeds the adaptive loop. */
+  axes?: Record<string, number>;
+}
+
+/**
+ * Parse an `Axes: K=0.6 Struct=0.8 ...` line from a proposal's block into a numeric
+ * map, or null. The courtier and dissonance workers emit named axes; the adaptive
+ * loop (brique 6) reponders the RANG from Darius's decisions on these.
+ */
+export function parseAxes(block: string): Record<string, number> | null {
+  const m = /^\s*Axes\s*:\s*(.+)$/im.exec(block);
+  if (!m) return null;
+  const axes: Record<string, number> = {};
+  const re = /([A-Za-z_]+)\s*=\s*(-?\d*\.?\d+)/g;
+  let g: RegExpExecArray | null;
+  while ((g = re.exec(m[1])) !== null) {
+    const v = Number(g[2]);
+    if (Number.isFinite(v)) axes[g[1]] = v;
+  }
+  return Object.keys(axes).length ? axes : null;
+}
+
+/** The matching bullet plus its indented continuation lines, joined, or null. */
+export function bulletBlock(content: string, file: string, hash: string): string | null {
+  const lines = content.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const m = /^\s*[-*]\s+(.*\S)\s*$/.exec(lines[i]);
+    if (m && bulletHash(file, m[1].trim()) === hash) {
+      const block = [lines[i]];
+      let j = i + 1;
+      while (j < lines.length && /^\s+\S/.test(lines[j]) && !/^\s*[-*]\s+/.test(lines[j])) block.push(lines[j++]);
+      return block.join('\n');
+    }
+  }
+  return null;
 }
 
 /** Bullets of the NEWEST dated `## ` section of an 08-auto file (freshest only). */
@@ -90,13 +136,19 @@ export function parsePropositions(file: string, label: string, content: string, 
   const idx = content.indexOf('\n## ');
   const top = (idx >= 0 ? content.slice(idx) : content).replace(/^\n+/, '');
   const section = top.split(/\n(?=## )/)[0] ?? '';
+  const lines = section.split(/\r?\n/);
   const items: Proposition[] = [];
-  for (const raw of section.split(/\r?\n/)) {
-    const m = /^\s*[-*]\s+(.*\S)\s*$/.exec(raw);
+  for (let i = 0; i < lines.length; i++) {
+    const m = /^\s*[-*]\s+(.*\S)\s*$/.exec(lines[i]);
     if (!m) continue;
     const text = m[1].trim();
     if (/^coches candidates/i.test(text)) continue; // sub-heading bullet, not a proposal
-    items.push({ file, label, text, hash: bulletHash(file, text) });
+    // Gather this bullet's indented continuation lines to read a possible `Axes:` line.
+    let block = lines[i];
+    let j = i + 1;
+    while (j < lines.length && /^\s+\S/.test(lines[j]) && !/^\s*[-*]\s+/.test(lines[j])) block += `\n${lines[j++]}`;
+    const axes = parseAxes(block) ?? undefined;
+    items.push({ file, label, text, hash: bulletHash(file, text), axes });
     if (items.length >= max) break;
   }
   return items;
@@ -352,6 +404,49 @@ export async function promoteProposition(
   return { path: task.path, text: cleanText(text) };
 }
 
+/** Where the adaptive loop reads its labeled examples (brique 6, source a). */
+export const BOUCLE_DATASET = `${AUTO_DIR}/_boucle-dataset.jsonl`;
+
+export interface BoucleExample {
+  axes: Record<string, number>;
+  label: 0 | 1;
+  statut: 'promu' | 'valide' | 'refuse';
+  raison?: string;
+  origine: string;
+}
+
+/**
+ * Serializes dataset appends within this process. read + write is not atomic on
+ * its own, so two concurrent /prop taps could lose-update the file; chaining
+ * every append behind the previous one makes the read-modify-write atomic. The
+ * chain never rejects (a failed write is swallowed here so it cannot stall the
+ * next append); the real error still propagates to the caller via the returned
+ * promise, which learn() logs.
+ */
+let datasetChain: Promise<void> = Promise.resolve();
+
+/**
+ * Append one labeled example (the proposal's axes + Darius's decision) to the
+ * adaptive-loop dataset. This is the wire that closes the loop: without it the
+ * boucle stays "inentrainable". One JSON object per line; the file is small
+ * (bounded by how much Darius reviews), so read + append + write is fine.
+ */
+export async function appendBoucleExample(vault: VaultManager, ex: BoucleExample): Promise<void> {
+  const line = JSON.stringify({ ...ex, date: day() });
+  const run = datasetChain.then(async () => {
+    let cur = '';
+    try {
+      cur = await vault.readFile(BOUCLE_DATASET);
+    } catch {
+      cur = '';
+    }
+    const body = cur.length === 0 ? '' : cur.endsWith('\n') ? cur : `${cur}\n`;
+    await vault.writeFile(BOUCLE_DATASET, `${body}${line}\n`);
+  });
+  datasetChain = run.catch(() => undefined);
+  return run;
+}
+
 // --- HTML -----------------------------------------------------------------------
 
 const CSS = `*{box-sizing:border-box}body{margin:0;min-height:100vh;background:#0b0f14;color:#e6edf3;
@@ -363,6 +458,9 @@ p.sub{color:#7d8896;font-size:13px;margin:0 0 8px}
 .tag{display:inline-block;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#8b98aa;margin-bottom:6px}
 .txt{font-size:15px;margin:0 0 12px;word-wrap:break-word}
 .row{display:flex;gap:8px}
+.row.rj{margin-top:8px}
+.row.rj a.btn{font-size:12px;padding:9px 3px;font-weight:500;background:#3a1414}
+.row.rj a.btn:active{background:#4c1a1a}
 a.btn{flex:1;text-align:center;text-decoration:none;border-radius:12px;padding:13px;font-weight:600;font-size:15px;color:#fff}
 a.ok{background:#16a34a}a.ok:active{background:#15803d}
 a.ko{background:#b91c1c}a.ko:active{background:#991b1b}
@@ -451,21 +549,49 @@ export function registerValidationRoutes(
   app.get('/rejette', flip('rejetee', 'Rejetée', 'rejete'));
   app.get('/approuve', flip('approuvee', 'Approuvée'));
 
-  // Act on an 08-auto proposal: promote to a task, or drop it.
+  const REASONS = new Set(['deja-su', 'hors-sujet', 'inactionnable', 'faux']);
+
+  // Act on an 08-auto proposal: keep it, promote to a task, or drop it (with a reason).
+  // Every decision on a proposal that carries named axes also feeds the adaptive loop.
   app.get('/prop', async (req: Request, res: Response) => {
     if (!gate(req, res)) return;
     const action = String(req.query.a ?? '');
     const file = String(req.query.f ?? '');
     const hash = String(req.query.h ?? '');
+    const reason = String(req.query.r ?? '');
     const allowed = PROP_BY_FILE.has(file) || DAILY_PATH_RE.test(file);
     if (!allowed || !hash) {
       res.status(400).type('text/plain').send('bad proposal ref');
       return;
     }
+    const origine = PROP_BY_FILE.get(file)?.label ?? 'daily';
+
+    // Read the proposal's named axes BEFORE any mutation removes its block.
+    let axes: Record<string, number> | null = null;
+    try {
+      const block = bulletBlock(await vault.readFile(file), file, hash);
+      if (block) axes = parseAxes(block);
+    } catch {
+      axes = null;
+    }
+    // Awaited (ordered + durable, like the proposal-file write above) but wrapped:
+    // a dataset write failure is logged, never breaks the tap.
+    const learn = async (label: 0 | 1, statut: 'promu' | 'valide' | 'refuse', r?: string): Promise<void> => {
+      if (!axes) return;
+      try {
+        await appendBoucleExample(vault, { axes, label, statut, raison: r, origine });
+      } catch (error) {
+        logger.warn('Boucle example append failed', { error: String(error), file, statut });
+      }
+    };
+
     try {
       if (action === 'jeter') {
         const { removed } = await dropProposition(vault, file, hash);
-        if (removed) remember(cleanText(removed), file, 'refuse');
+        if (removed) {
+          remember(cleanText(removed), file, 'refuse');
+          await learn(0, 'refuse', REASONS.has(reason) ? reason : undefined);
+        }
         res.type('text/html').send(
           removed
             ? confirm('Jetée', 'Proposition retirée du cerveau. Elle ne reviendra pas.', token)
@@ -473,9 +599,28 @@ export function registerValidationRoutes(
         );
         return;
       }
+      if (action === 'garder') {
+        // Keep as useful WITHOUT tasking: record the 'valide' verdict (settledMask then
+        // hides it next time) and feed the loop a positive example. The bullet stays in
+        // the file so the pont's content is preserved; it just stops being re-proposed.
+        const text = findBullet(await vault.readFile(file), file, hash);
+        if (text) {
+          remember(cleanText(text), file, 'valide');
+          await learn(1, 'valide');
+        }
+        res.type('text/html').send(
+          text
+            ? confirm('Gardée', 'Notée comme utile. Elle ne reviendra pas dans la revue.', token)
+            : confirm('Déjà traitée', 'Cette proposition n’est plus là.', token),
+        );
+        return;
+      }
       if (action === 'tache') {
         const { path, text } = await promoteProposition(vault, file, hash);
-        if (text) remember(text, file, 'promu');
+        if (text) {
+          remember(text, file, 'promu');
+          await learn(1, 'promu');
+        }
         res.type('text/html').send(
           path
             ? confirm('En tâche', `Le chef de chantier va la traiter (${path}).`, token)
@@ -533,8 +678,25 @@ export function registerValidationRoutes(
         .map(p => {
           const f = encodeURIComponent(p.file);
           const h = encodeURIComponent(p.hash);
-          return `<div class="card"><span class="tag">${escapeHtml(p.label)}</span>
-            <p class="txt">${escapeHtml(cleanText(p.text))}</p>
+          const head = `<div class="card"><span class="tag">${escapeHtml(p.label)}</span>
+            <p class="txt">${escapeHtml(cleanText(p.text))}</p>`;
+          // Axes-bearing proposals (ponts, dissonances) get the richer card: Garder (keep),
+          // En tâche (act), and one-tap rejects tagged with a reason (the taxonomy the loop
+          // weights). Each decision writes a labeled example. Only PONT axes are RANG axes,
+          // so only ponts actually reponder the RANG; the loop projects onto RANG_AXES and
+          // skips a dissonance's own axes (Levier/Enjeu/...). Plain proposals keep En tâche / Jeter.
+          if (p.axes) {
+            return `${head}
+            <div class="row">
+            <a class="btn ok" href="/prop?k=${k}&a=garder&f=${f}&h=${h}">Garder</a>
+            <a class="btn go" href="/prop?k=${k}&a=tache&f=${f}&h=${h}">En tâche</a></div>
+            <div class="row rj">
+            <a class="btn ko" href="/prop?k=${k}&a=jeter&r=deja-su&f=${f}&h=${h}">déjà su</a>
+            <a class="btn ko" href="/prop?k=${k}&a=jeter&r=hors-sujet&f=${f}&h=${h}">hors-sujet</a>
+            <a class="btn ko" href="/prop?k=${k}&a=jeter&r=inactionnable&f=${f}&h=${h}">inactionnable</a>
+            <a class="btn ko" href="/prop?k=${k}&a=jeter&r=faux&f=${f}&h=${h}">faux</a></div></div>`;
+          }
+          return `${head}
             <div class="row">
             <a class="btn go" href="/prop?k=${k}&a=tache&f=${f}&h=${h}">En tâche</a>
             <a class="btn ko" href="/prop?k=${k}&a=jeter&f=${f}&h=${h}">Jeter</a></div></div>`;
