@@ -158,4 +158,67 @@ describe('validation routes (HTTP)', () => {
     expect(r.status).toBe(200);
     expect(vault.files.get(daily)).not.toContain('orpheline du carnet');
   });
+
+  it('a pont decision writes a labeled example (axes + label + reason) to the loop dataset', async () => {
+    const { bulletHash, BOUCLE_DATASET } = await import('@/server/local/validation-route');
+    const v3 = new FakeVault();
+    const app3 = express();
+    registerValidationRoutes(app3, v3);
+    const srv3: Server = await new Promise(resolve => {
+      const s = app3.listen(0, () => resolve(s));
+    });
+    const addr = srv3.address();
+    const b3 = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
+    try {
+      const ponts = '08-auto/_ponts.md';
+      const t1 = '**[pont] Garder celui-ci**';
+      const t2 = '**[pont] Jeter celui-la**';
+      v3.files.set(
+        ponts,
+        `# Ponts\n\n## 2026-07-19\n\n- ${t1}\n  Axes: K=0.9 Struct=0.8 levier=0.7\n- ${t2}\n  Axes: K=0.1 Struct=0.2 levier=0.1\n`,
+      );
+      // Garder -> positive example (label 1, statut valide), bullet stays.
+      const rGarder = await fetch(`${b3}/prop?k=${TOKEN}&a=garder&f=${encodeURIComponent(ponts)}&h=${bulletHash(ponts, t1)}`);
+      expect(rGarder.status).toBe(200);
+      // Jeter avec raison -> negative example (label 0, statut refuse, raison faux).
+      const rJeter = await fetch(
+        `${b3}/prop?k=${TOKEN}&a=jeter&r=faux&f=${encodeURIComponent(ponts)}&h=${bulletHash(ponts, t2)}`,
+      );
+      expect(rJeter.status).toBe(200);
+
+      const lines = (v3.files.get(BOUCLE_DATASET) as string)
+        .trim()
+        .split('\n')
+        .map(l => JSON.parse(l));
+      expect(lines).toHaveLength(2);
+      const kept = lines.find(l => l.statut === 'valide');
+      expect(kept).toMatchObject({ label: 1, origine: 'pont', axes: { K: 0.9, Struct: 0.8, levier: 0.7 } });
+      const dropped = lines.find(l => l.statut === 'refuse');
+      expect(dropped).toMatchObject({ label: 0, raison: 'faux', axes: { K: 0.1, Struct: 0.2, levier: 0.1 } });
+    } finally {
+      srv3.close();
+    }
+  });
+
+  it('an insight decision (no axes) writes NO loop example', async () => {
+    const { bulletHash, BOUCLE_DATASET } = await import('@/server/local/validation-route');
+    const v4 = new FakeVault();
+    const app4 = express();
+    registerValidationRoutes(app4, v4);
+    const srv4: Server = await new Promise(resolve => {
+      const s = app4.listen(0, () => resolve(s));
+    });
+    const addr = srv4.address();
+    const b4 = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
+    try {
+      const ins = '08-auto/_insights.md';
+      const t = '**[contradiction] Un insight sans axes**';
+      v4.files.set(ins, `# Insights\n\n## 2026-07-19\n\n- ${t}\n  Preuve : [[a]] + [[b]].\n`);
+      const r = await fetch(`${b4}/prop?k=${TOKEN}&a=jeter&f=${encodeURIComponent(ins)}&h=${bulletHash(ins, t)}`);
+      expect(r.status).toBe(200);
+      expect(v4.files.has(BOUCLE_DATASET)).toBe(false);
+    } finally {
+      srv4.close();
+    }
+  });
 });

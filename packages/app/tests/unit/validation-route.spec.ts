@@ -14,6 +14,10 @@ import {
   newestDailyPath,
   parseDailyPropositions,
   collectDailyPropositions,
+  parseAxes,
+  bulletBlock,
+  appendBoucleExample,
+  BOUCLE_DATASET,
 } from '@/server/local/validation-route';
 import type { VaultManager } from '@/services/vault-manager';
 import { configureLogger } from '@/utils/logger';
@@ -306,5 +310,72 @@ describe('daily proposition one-tap', () => {
     expect(created).toContain('statut: proposee');
     expect(created).toContain('carnet du jour');
     expect(v.files.get(DAILY)).not.toContain('créer la fiche contact Laura');
+  });
+});
+
+const PONTS = '08-auto/_ponts.md';
+const PONT_MD = `---
+type: note
+---
+
+# Ponts
+
+## 2026-07-19
+
+- **[pont] L'état ne s'acquiert que constaté**
+  Notes: [[a]] + [[b]]
+  Relation: A et B sont deux cas du même mécanisme.
+  Axes: K=0.65 Struct=0.85 Broker=0.85 Anchor=0.9 levier=0.1
+  Geste (30 min): relire l'email marchand.
+- **[pont] Second pont**
+  Axes: K=0.2 Struct=0.3
+`;
+
+describe('adaptive-loop wiring (ponts/dissonances -> _boucle-dataset.jsonl)', () => {
+  it('parseAxes reads a named-axes line, ignores non-finite, returns null when absent', () => {
+    expect(parseAxes('Axes: K=0.65 Struct=0.85 levier=0.1')).toEqual({ K: 0.65, Struct: 0.85, levier: 0.1 });
+    expect(parseAxes('  Axes: Levier=0.8 Enjeu=0.8 Testabilite=1.0')).toEqual({ Levier: 0.8, Enjeu: 0.8, Testabilite: 1.0 });
+    expect(parseAxes('un bloc sans ligne axes')).toBeNull();
+    expect(parseAxes('Axes: K=-0.5 Struct=1')).toEqual({ K: -0.5, Struct: 1 }); // negatives kept, clamped by the loop
+  });
+
+  it('bulletBlock returns the bullet plus its indented continuation lines, stopping at the next bullet', () => {
+    const props = parsePropositions(PONTS, 'pont', PONT_MD);
+    const block = bulletBlock(PONT_MD, PONTS, props[0].hash) as string;
+    expect(block).toContain('[pont]');
+    expect(block).toContain('Axes: K=0.65');
+    expect(block).not.toContain('Second pont');
+  });
+
+  it('parsePropositions carries axes for a pont, none for a plain insight', () => {
+    const props = parsePropositions(PONTS, 'pont', PONT_MD);
+    expect(props[0].axes).toEqual({ K: 0.65, Struct: 0.85, Broker: 0.85, Anchor: 0.9, levier: 0.1 });
+    expect(props[1].axes).toEqual({ K: 0.2, Struct: 0.3 });
+    const plain = parsePropositions(INSIGHTS, 'insight', INSIGHTS_MD);
+    expect(plain[0].axes).toBeUndefined();
+  });
+
+  it('appendBoucleExample appends one JSON line per call, accumulating, with a date', async () => {
+    const v = new FakeVault();
+    await appendBoucleExample(v, { axes: { K: 0.6 }, label: 1, statut: 'promu', origine: 'pont' });
+    await appendBoucleExample(v, { axes: { K: 0.2 }, label: 0, statut: 'refuse', raison: 'faux', origine: 'pont' });
+    const lines = (v.files.get(BOUCLE_DATASET) as string).trim().split('\n');
+    expect(lines).toHaveLength(2);
+    const first = JSON.parse(lines[0]);
+    expect(first).toMatchObject({ axes: { K: 0.6 }, label: 1, statut: 'promu', origine: 'pont' });
+    expect(first.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(JSON.parse(lines[1])).toMatchObject({ label: 0, statut: 'refuse', raison: 'faux' });
+  });
+
+  it('appendBoucleExample serializes concurrent appends (no lost update)', async () => {
+    const v = new FakeVault();
+    await Promise.all([
+      appendBoucleExample(v, { axes: { K: 1 }, label: 1, statut: 'promu', origine: 'pont' }),
+      appendBoucleExample(v, { axes: { K: 2 }, label: 0, statut: 'refuse', origine: 'pont' }),
+      appendBoucleExample(v, { axes: { K: 3 }, label: 1, statut: 'valide', origine: 'pont' }),
+    ]);
+    const lines = (v.files.get(BOUCLE_DATASET) as string).trim().split('\n');
+    expect(lines).toHaveLength(3); // all three landed; without the chain the RMW would keep 1
+    expect(new Set(lines.map(l => JSON.parse(l).axes.K))).toEqual(new Set([1, 2, 3]));
   });
 });
