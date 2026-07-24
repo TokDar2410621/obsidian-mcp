@@ -18,6 +18,7 @@ import {
   bulletBlock,
   appendBoucleExample,
   BOUCLE_DATASET,
+  sanitizeNote,
 } from '@/server/local/validation-route';
 import type { VaultManager } from '@/services/vault-manager';
 import { configureLogger } from '@/utils/logger';
@@ -405,5 +406,15 @@ describe('adaptive-loop wiring (ponts/dissonances -> _boucle-dataset.jsonl)', ()
     const lines = (v.files.get(BOUCLE_DATASET) as string).trim().split('\n');
     expect(lines).toHaveLength(3); // all three landed; without the chain the RMW would keep 1
     expect(new Set(lines.map(l => JSON.parse(l).axes.K))).toEqual(new Set([1, 2, 3]));
+  });
+
+  it('sanitizeNote: caps length, neutralizes em-dash, collapses whitespace, empty -> undefined', () => {
+    expect(sanitizeNote(undefined)).toBeUndefined();
+    expect(sanitizeNote('   ')).toBeUndefined();
+    expect(sanitizeNote('  trop  d espaces\n\ty  ')).toBe('trop d espaces y');
+    expect(sanitizeNote('doublon d offre—deja fait')).toBe('doublon d offre : deja fait');
+    expect((sanitizeNote('x'.repeat(400)) as string).length).toBe(280);
+    // control chars (C0 non-whitespace, DEL, C1) are dropped, per the contract
+    expect(sanitizeNote('a\x07b\x7fcd')).toBe('abcd');
   });
 });

@@ -221,4 +221,89 @@ describe('validation routes (HTTP)', () => {
       srv4.close();
     }
   });
+
+  it('an optional free-text note reaches BOTH the conclusion and the loop example', async () => {
+    const { bulletHash, BOUCLE_DATASET } = await import('@/server/local/validation-route');
+    const { ConclusionsRegistry, CONCLUSIONS_FILE } = await import('@/services/conclusions/conclusions-registry');
+    const v5 = new FakeVault();
+    const registry = new ConclusionsRegistry(v5, null);
+    const app5 = express();
+    registerValidationRoutes(app5, v5, registry);
+    const srv5: Server = await new Promise(resolve => {
+      const s = app5.listen(0, () => resolve(s));
+    });
+    const addr = srv5.address();
+    const b5 = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
+    try {
+      const ponts = '08-auto/_ponts.md';
+      const t = '**[pont] Avec une raison libre**';
+      v5.files.set(ponts, `# Ponts\n\n## 2026-07-24\n\n- ${t}\n  Axes: K=0.5 levier=0.5\n`);
+      const note = 'doublon de l offre greffe';
+      const r = await fetch(
+        `${b5}/prop?k=${TOKEN}&a=garder&f=${encodeURIComponent(ponts)}&h=${bulletHash(ponts, t)}&note=${encodeURIComponent(note)}`,
+      );
+      expect(r.status).toBe(200);
+      // the conclusion carries Darius's typed reason...
+      const conc = JSON.parse(v5.files.get(CONCLUSIONS_FILE) as string);
+      expect(conc.items[0].note).toBe(note);
+      // ...and so does the loop example.
+      const ex = JSON.parse((v5.files.get(BOUCLE_DATASET) as string).trim());
+      expect(ex).toMatchObject({ statut: 'valide', label: 1, note });
+    } finally {
+      srv5.close();
+    }
+  });
+
+  it('a task decision also captures an optional note on its conclusion', async () => {
+    const { ConclusionsRegistry, CONCLUSIONS_FILE } = await import('@/services/conclusions/conclusions-registry');
+    const v6 = new FakeVault();
+    const registry = new ConclusionsRegistry(v6, null);
+    const app6 = express();
+    registerValidationRoutes(app6, v6, registry);
+    const srv6: Server = await new Promise(resolve => {
+      const s = app6.listen(0, () => resolve(s));
+    });
+    const addr = srv6.address();
+    const b6 = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
+    try {
+      v6.files.set('09-taches/z.md', task('a-valider'));
+      const r = await fetch(
+        `${b6}/rejette?k=${TOKEN}&t=${encodeURIComponent('09-taches/z.md')}&note=${encodeURIComponent('hors scope ce mois')}`,
+      );
+      expect(r.status).toBe(200);
+      const conc = JSON.parse(v6.files.get(CONCLUSIONS_FILE) as string);
+      expect(conc.items[0]).toMatchObject({ status: 'rejete', note: 'hors scope ce mois' });
+    } finally {
+      srv6.close();
+    }
+  });
+
+  it('an /approuve decision keeps an optional note in the task Journal (no conclusion path)', async () => {
+    const v7 = new FakeVault();
+    const app7 = express();
+    registerValidationRoutes(app7, v7);
+    const srv7: Server = await new Promise(resolve => {
+      const s = app7.listen(0, () => resolve(s));
+    });
+    const addr = srv7.address();
+    const b7 = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
+    try {
+      const tp = '09-taches/j.md';
+      v7.files.set(
+        tp,
+        '---\ntype: tache\nstatut: proposee\nrisque: validation-requise\ncible: vault\n---\n\n# T\n\n## Journal\n\n## Résultat\n',
+      );
+      const r = await fetch(
+        `${b7}/approuve?k=${TOKEN}&t=${encodeURIComponent(tp)}&note=${encodeURIComponent('risque acceptable source verifiee')}`,
+      );
+      expect(r.status).toBe(200);
+      const content = v7.files.get(tp) as string;
+      expect(content).toContain('risque acceptable source verifiee');
+      // it landed under the Journal heading, before Résultat
+      expect(content.indexOf('risque acceptable')).toBeGreaterThan(content.indexOf('## Journal'));
+      expect(content.indexOf('risque acceptable')).toBeLessThan(content.indexOf('## Résultat'));
+    } finally {
+      srv7.close();
+    }
+  });
 });

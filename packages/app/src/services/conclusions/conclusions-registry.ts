@@ -28,6 +28,7 @@ export interface Conclusion {
   source: string;
   status: ConclusionStatus;
   date: string; // YYYY-MM-DD
+  note?: string; // free-text reason Darius optionally typed in /revue (for his memory, not the loop)
 }
 
 interface RegistryData {
@@ -146,13 +147,23 @@ export class ConclusionsRegistry {
    * Record a conclusion (or update the status of the same/similar one).
    * A refusal always wins over an older 'propose'.
    */
-  async record(entry: { text: string; source: string; status: ConclusionStatus }): Promise<Conclusion> {
+  async record(entry: {
+    text: string;
+    source: string;
+    status: ConclusionStatus;
+    note?: string;
+  }): Promise<Conclusion> {
     const data = await this.load();
     const text = normText(entry.text);
+    const note = entry.note ? entry.note.slice(0, 280) : undefined;
     const similar = await this.findSimilar(text, 0.92);
     if (similar) {
       similar.item.status = entry.status;
       similar.item.date = today();
+      // Reflect the CURRENT decision: a re-decision without a typed reason must not keep
+      // the old note (it would contradict the new status). Absent note -> drop it.
+      if (note) similar.item.note = note;
+      else delete similar.item.note;
       await this.save();
       return similar.item;
     }
@@ -162,11 +173,14 @@ export class ConclusionsRegistry {
       source: entry.source,
       status: entry.status,
       date: today(),
+      ...(note ? { note } : {}),
     };
     const existing = data.items.find(i => i.id === item.id);
     if (existing) {
       existing.status = entry.status;
       existing.date = item.date;
+      if (note) existing.note = note;
+      else delete existing.note;
       await this.save();
       return existing;
     }
