@@ -556,7 +556,7 @@ details[open] summary::before{content:"▾ "}
 .det{font-size:14px;color:#c7d0da;margin:0 0 6px;white-space:pre-wrap}
 a.note{display:inline-block;margin:4px 0 2px;color:#7dd3fc;text-decoration:none;font-size:14px}
 .row{display:flex;gap:8px;margin-top:4px}
-input.rz{width:100%;margin:2px 0 10px;padding:9px 11px;background:#0e151d;border:1px solid #26313d;border-radius:10px;color:#e6edf3;font:14px inherit}
+input.rz{width:100%;margin:2px 0 10px;padding:9px 11px;background:#0e151d;border:1px solid #26313d;border-radius:10px;color:#e6edf3;font:16px inherit}
 input.rz::placeholder{color:#5b6572}
 .row.rj{margin-top:8px}
 .toast{position:fixed;left:50%;bottom:-70px;transform:translateX(-50%);background:#16a34a;color:#fff;padding:12px 20px;border-radius:12px;font-weight:600;font-size:15px;box-shadow:0 8px 24px rgba(0,0,0,.45);opacity:0;transition:opacity .25s,bottom .25s;z-index:50;max-width:90vw;text-align:center}
