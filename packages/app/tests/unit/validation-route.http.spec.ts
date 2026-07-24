@@ -77,6 +77,10 @@ describe('validation routes (HTTP)', () => {
     expect(html).toContain('/valide?k=');
     expect(html).toContain('Un insight à trier');
     expect(html).toContain('/prop?k=');
+    // decisions happen in-page via fetch + a toast, no navigation to a confirm page
+    expect(html).toContain('function toast');
+    expect(html).toContain('fetch(url)');
+    expect(html).toContain('.toast');
   });
 
   it('flips a task statut via /valide', async () => {
