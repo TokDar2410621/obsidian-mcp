@@ -81,6 +81,11 @@ describe('validation routes (HTTP)', () => {
     expect(html).toContain('function toast');
     expect(html).toContain('fetch(url)');
     expect(html).toContain('.toast');
+    // dynamic tabs: one per non-empty group (Tâches + the insight type here)
+    expect(html).toContain('class="tabs"');
+    expect(html).toContain('data-panel="taches"');
+    expect(html).toContain('data-panel="insight"');
+    expect(html).toContain('id="panel-taches"');
   });
 
   it('flips a task statut via /valide', async () => {

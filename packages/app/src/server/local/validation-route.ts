@@ -561,6 +561,13 @@ input.rz::placeholder{color:#5b6572}
 .row.rj{margin-top:8px}
 .toast{position:fixed;left:50%;bottom:-70px;transform:translateX(-50%);background:#16a34a;color:#fff;padding:12px 20px;border-radius:12px;font-weight:600;font-size:15px;box-shadow:0 8px 24px rgba(0,0,0,.45);opacity:0;transition:opacity .25s,bottom .25s;z-index:50;max-width:90vw;text-align:center}
 .toast.show{opacity:1;bottom:24px}
+.tabs{display:flex;gap:6px;overflow-x:auto;margin:18px 0 8px;padding-bottom:4px;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tab{flex:0 0 auto;background:#131a22;border:1px solid #26313d;color:#8b98aa;border-radius:999px;padding:8px 15px;font:15px inherit;font-weight:600;white-space:nowrap;cursor:pointer}
+.tab.active{background:#1f6feb;border-color:#1f6feb;color:#fff}
+.tab .cnt{opacity:.65;font-weight:400;margin-left:2px}
+.panel{display:none}
+.panel.active{display:block}
 .row.rj a.btn{font-size:12px;padding:9px 3px;font-weight:500;background:#3a1414}
 .row.rj a.btn:active{background:#4c1a1a}
 a.btn{flex:1;text-align:center;text-decoration:none;border-radius:12px;padding:14px;font-weight:600;font-size:15px;color:#fff}
@@ -579,6 +586,8 @@ function page(title: string, body: string): string {
 <script>
 function toast(m){var t=document.createElement('div');t.className='toast';t.textContent='✓ '+m;document.body.appendChild(t);requestAnimationFrame(function(){t.classList.add('show')});setTimeout(function(){t.classList.remove('show');setTimeout(function(){t.remove()},300)},1700)}
 document.addEventListener('click',function(e){
+  var tab=e.target.closest('.tab');
+  if(tab){var id=tab.getAttribute('data-panel');var ts=document.querySelectorAll('.tab');for(var i=0;i<ts.length;i++)ts[i].classList.toggle('active',ts[i]===tab);var ps=document.querySelectorAll('.panel');for(var j=0;j<ps.length;j++)ps[j].classList.toggle('active',ps[j].id==='panel-'+id);return}
   var a=e.target.closest('a.btn');if(!a)return;
   e.preventDefault();
   if(a.dataset.busy)return;
@@ -591,7 +600,7 @@ document.addEventListener('click',function(e){
   fetch(url).then(function(r){
     if(!r.ok)throw 0;
     toast(a.textContent.trim());
-    if(card){card.style.transition='opacity .2s';card.style.opacity='0';setTimeout(function(){card.remove()},210)}
+    if(card){var panel=card.closest('.panel');card.style.transition='opacity .2s';card.style.opacity='0';setTimeout(function(){card.remove();if(panel){var n=panel.querySelectorAll('.card').length;var c=document.querySelector('.tab[data-panel="'+panel.id.slice(6)+'"] .cnt');if(c)c.textContent=n;if(!n)panel.innerHTML='<p class="empty">Rien ici, bien joué.</p>'}},210)}
   }).catch(function(){toast('erreur, reessaie');a.dataset.busy='';if(card)card.style.opacity=''});
 });
 </script>
@@ -841,19 +850,18 @@ export function registerValidationRoutes(
         })
         .join('');
 
-      const propCards = props
-        .map(p => {
-          const f = encodeURIComponent(p.file);
-          const h = encodeURIComponent(p.hash);
-          const head = `<div class="card">
+      const propCard = (p: Proposition): string => {
+        const f = encodeURIComponent(p.file);
+        const h = encodeURIComponent(p.hash);
+        const head = `<div class="card">
             <div class="head"><span class="pill idea">${escapeHtml(p.label)}</span></div>
             <p class="txt">${escapeHtml(cleanText(p.text))}</p>`;
-          // Axes-bearing proposals (ponts, dissonances) get the richer card: Garder (keep),
-          // En tâche (act), and one-tap rejects tagged with a reason (the taxonomy the loop
-          // weights). Each decision writes a labeled example that feeds the adaptive loop.
-          // Plain proposals keep the simple En tâche / Jeter.
-          if (p.axes) {
-            return `${head}
+        // Axes-bearing proposals (ponts, dissonances) get the richer card: Garder (keep),
+        // En tâche (act), and one-tap rejects tagged with a reason (the taxonomy the loop
+        // weights). Each decision writes a labeled example that feeds the adaptive loop.
+        // Plain proposals keep the simple En tâche / Jeter.
+        if (p.axes) {
+          return `${head}
             <input class="rz" placeholder="raison (optionnel)" maxlength="280">
             <div class="row">
             <a class="btn ok" href="/prop?k=${k}&a=garder&f=${f}&h=${h}">Garder</a>
@@ -863,13 +871,42 @@ export function registerValidationRoutes(
             <a class="btn ko" href="/prop?k=${k}&a=jeter&r=hors-sujet&f=${f}&h=${h}">hors-sujet</a>
             <a class="btn ko" href="/prop?k=${k}&a=jeter&r=inactionnable&f=${f}&h=${h}">inactionnable</a>
             <a class="btn ko" href="/prop?k=${k}&a=jeter&r=faux&f=${f}&h=${h}">faux</a></div></div>`;
-          }
-          return `${head}
+        }
+        return `${head}
             <input class="rz" placeholder="raison (optionnel)" maxlength="280">
             <div class="row">
             <a class="btn go" href="/prop?k=${k}&a=tache&f=${f}&h=${h}">En faire une tâche</a>
             <a class="btn ko" href="/prop?k=${k}&a=jeter&f=${f}&h=${h}">Jeter</a></div></div>`;
-        })
+      };
+
+      // Onglets dynamiques : "Tâches" puis un onglet par type d'idée PRESENT (non vide),
+      // avec son compte. Un seul panneau visible a la fois (le premier par defaut).
+      const PROP_TABS: Array<[string, string]> = [
+        ['pont', 'Ponts'],
+        ['dissonance', 'Dissonances'],
+        ['insight', 'Insights'],
+        ['lien', 'Liens'],
+        ['objectif', 'Objectifs'],
+        ['daily', 'Carnet'],
+      ];
+      const tabs: Array<{ id: string; label: string; count: number; html: string }> = [];
+      if (tasks.length) tabs.push({ id: 'taches', label: 'Tâches', count: tasks.length, html: taskCards });
+      const knownLabels = new Set(PROP_TABS.map(t => t[0]));
+      for (const [key, name] of PROP_TABS) {
+        const group = props.filter(p => p.label === key);
+        if (group.length) tabs.push({ id: key, label: name, count: group.length, html: group.map(propCard).join('') });
+      }
+      const autres = props.filter(p => !knownLabels.has(p.label));
+      if (autres.length) tabs.push({ id: 'autres', label: 'Autres', count: autres.length, html: autres.map(propCard).join('') });
+
+      const tabBar = tabs
+        .map(
+          (t, i) =>
+            `<button class="tab${i === 0 ? ' active' : ''}" data-panel="${t.id}">${escapeHtml(t.label)} <span class="cnt">${t.count}</span></button>`,
+        )
+        .join('');
+      const tabPanels = tabs
+        .map((t, i) => `<div class="panel${i === 0 ? ' active' : ''}" id="panel-${t.id}">${t.html}</div>`)
         .join('');
 
       const legende =
@@ -886,13 +923,12 @@ export function registerValidationRoutes(
       const body =
         `<h1>Revue du cerveau</h1>` +
         `<p class="sub">${tasks.length} tâche(s) et ${props.length} idée(s) t'attendent. Les plus récentes en premier.` +
-        (nEchec > 0 ? ` <b class="fire">${nEchec} échouée(s) à relancer en haut.</b>` : '') +
+        (nEchec > 0 ? ` <b class="fire">${nEchec} échouée(s) à relancer.</b>` : '') +
         `</p>` +
         legende +
-        `<h2>Tâches prêtes (${tasks.length})</h2>` +
-        (taskCards || '<p class="empty">Rien à valider. La file est vide.</p>') +
-        `<h2>Idées à trier (${props.length})</h2>` +
-        (propCards || '<p class="empty">Aucune idée fraîche.</p>') +
+        (tabs.length
+          ? `<div class="tabs">${tabBar}</div>${tabPanels}`
+          : '<p class="empty">Rien à trier. La file est vide.</p>') +
         (hiddenCount > 0
           ? `<p class="sub" style="margin-top:14px">${hiddenCount} idée(s) déjà réglée(s), masquée(s).</p>`
           : '');
