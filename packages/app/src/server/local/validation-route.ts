@@ -192,6 +192,33 @@ export interface PendingTask {
   title: string;
   statut: string;
   risque: string;
+  /** created date (YYYY-MM-DD), for newest-first ordering. */
+  date: string;
+  /** one-line « ce qui a été demandé » for the collapsible summary. */
+  demande: string;
+  /** first meaningful lines of « ## Résultat » : the deliverable itself. */
+  resultat: string;
+}
+
+/** Body of a `## Heading` section, up to the next `##` or end. */
+function section(content: string, name: string): string {
+  const re = new RegExp(`##\\s+${name}\\s*\\n([\\s\\S]*?)(?=\\n##\\s|$)`, 'i');
+  return (re.exec(content)?.[1] ?? '').trim();
+}
+
+/** Clean a section into a short human excerpt (drop timestamps, links, bullets). */
+function excerptOf(raw: string, max = 320): string {
+  const line = raw
+    .split(/\r?\n/)
+    .map(l => l.trim())
+    .filter(l => l && !/^\*\*\d{4}-\d{2}-\d{2}/.test(l) && !/^#{1,6}\s/.test(l) && l !== '>')
+    .join(' ')
+    .replace(/\[\[([^\]|]*\|)?([^\]]*)\]\]/g, '$2')
+    .replace(/^[-*>\s]+/, '')
+    .replace(/\*\*|`/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
 }
 
 /** Tasks awaiting a human: controlled ones (a-valider) and risky ones (proposee). */
@@ -226,8 +253,24 @@ export async function listPendingTasks(vault: VaultManager): Promise<PendingTask
       (statut === 'proposee' && risque === 'validation-requise');
     if (!awaits) continue;
     const title = (/^#\s+(.+)$/m.exec(content)?.[1] ?? base).trim();
-    out.push({ path: rel, title, statut, risque });
+    const date =
+      /^created\s*:\s*(\d{4}-\d{2}-\d{2})/m.exec(content)?.[1] ??
+      /(\d{4}-\d{2}-\d{2})/.exec(base)?.[1] ??
+      '0000-00-00';
+    out.push({
+      path: rel,
+      title,
+      statut,
+      risque,
+      date,
+      demande: excerptOf(section(content, 'Demande'), 240),
+      resultat: excerptOf(section(content, 'Résultat')),
+    });
   }
+  // Échouées d'abord (elles sont coincées), puis le reste du plus RÉCENT au
+  // plus ancien (Darius : « les nouveaux trucs sont en bas au lieu d'en haut »).
+  const rank = (t: PendingTask) => (t.statut === 'echouee' ? 0 : 1);
+  out.sort((a, b) => rank(a) - rank(b) || b.date.localeCompare(a.date));
   return out;
 }
 
@@ -356,19 +399,36 @@ export async function promoteProposition(
 
 const CSS = `*{box-sizing:border-box}body{margin:0;min-height:100vh;background:#0b0f14;color:#e6edf3;
 font:16px/1.45 -apple-system,system-ui,sans-serif;padding:env(safe-area-inset-top) 16px env(safe-area-inset-bottom)}
-main{max-width:600px;margin:0 auto;padding:24px 0 48px}
-h1{font-size:20px;margin:0 0 4px}h2{font-size:14px;text-transform:uppercase;letter-spacing:.04em;color:#7d8896;margin:28px 0 10px}
-p.sub{color:#7d8896;font-size:13px;margin:0 0 8px}
-.card{background:#131a22;border:1px solid #26313d;border-radius:14px;padding:14px;margin:10px 0}
-.tag{display:inline-block;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#8b98aa;margin-bottom:6px}
-.txt{font-size:15px;margin:0 0 12px;word-wrap:break-word}
-.row{display:flex;gap:8px}
-a.btn{flex:1;text-align:center;text-decoration:none;border-radius:12px;padding:13px;font-weight:600;font-size:15px;color:#fff}
+main{max-width:600px;margin:0 auto;padding:24px 0 56px}
+h1{font-size:22px;margin:0 0 6px}h2{font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:#7d8896;margin:30px 0 10px}
+p.sub{color:#9aa6b2;font-size:14px;margin:0 0 8px}
+.fire{color:#fca5a5}
+.legend{background:#0f1620;border:1px solid #1f2937;border-radius:12px;padding:12px 14px;margin:12px 0 4px;font-size:13.5px;color:#aeb9c5}
+.legend p{margin:0 0 6px}.legend ul{margin:0;padding-left:18px}.legend li{margin:3px 0}
+.legend b{color:#e6edf3}
+.card{background:#131a22;border:1px solid #26313d;border-radius:14px;padding:14px;margin:12px 0}
+.head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.date{font-size:12px;color:#5f6b78;font-variant-numeric:tabular-nums}
+.pill{display:inline-block;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:3px 9px;border-radius:999px}
+.pill.ok{background:#0f2e1c;color:#4ade80}.pill.warn{background:#3a2c08;color:#fbbf24}
+.pill.bad{background:#3a1414;color:#f87171}.pill.idea{background:#16233a;color:#7dd3fc}
+.txt{font-size:16px;font-weight:600;margin:0 0 10px;word-wrap:break-word;line-height:1.35}
+details{margin:0 0 12px}
+summary{cursor:pointer;color:#9aa6b2;font-size:14px;list-style:none;padding:8px 0}
+summary::-webkit-details-marker{display:none}
+summary::before{content:"▸ ";color:#5f6b78}
+details[open] summary::before{content:"▾ "}
+.lbl{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#6b7684;margin:8px 0 2px}
+.det{font-size:14px;color:#c7d0da;margin:0 0 6px;white-space:pre-wrap}
+a.note{display:inline-block;margin:4px 0 2px;color:#7dd3fc;text-decoration:none;font-size:14px}
+.row{display:flex;gap:8px;margin-top:4px}
+a.btn{flex:1;text-align:center;text-decoration:none;border-radius:12px;padding:14px;font-weight:600;font-size:15px;color:#fff}
 a.ok{background:#16a34a}a.ok:active{background:#15803d}
 a.ko{background:#b91c1c}a.ko:active{background:#991b1b}
 a.go{background:#2563eb}a.go:active{background:#1d4ed8}
 .empty{color:#7d8896;text-align:center;padding:24px 0}
-.back{display:inline-block;margin-top:24px;color:#3b82f6;text-decoration:none}`;
+.note-full{display:block;white-space:pre-wrap;word-wrap:break-word;background:#0f1620;border:1px solid #1f2937;border-radius:12px;padding:16px;font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:#c7d0da;margin:8px 0}
+.back{display:inline-block;margin-top:24px;color:#3b82f6;text-decoration:none;font-size:15px}`;
 
 function page(title: string, body: string): string {
   return `<!doctype html><html lang="fr"><head><meta charset="utf-8">
@@ -490,6 +550,29 @@ export function registerValidationRoutes(
     }
   });
 
+  // Read-only full note view (« voir la note complète »). Token-gated,
+  // path-validated. Rendered as escaped pre-wrap: zero injection, faithful.
+  app.get('/note', async (req: Request, res: Response) => {
+    if (!gate(req, res)) return;
+    const t = String(req.query.t ?? '');
+    if (!validTaskPath(t)) {
+      res.status(400).type('text/plain').send('bad note path');
+      return;
+    }
+    try {
+      const content = await vault.readFile(t);
+      const title = (/^#\s+(.+)$/m.exec(content)?.[1] ?? t.split('/').pop() ?? 'Note').trim();
+      const body = `<h1>${escapeHtml(title)}</h1>
+        <p class="sub">${escapeHtml(t)}</p>
+        <article class="note-full">${escapeHtml(content)}</article>
+        <a class="back" href="/revue?k=${encodeURIComponent(token)}">← Retour à la revue</a>`;
+      res.type('text/html').send(page(title, body));
+    } catch (error) {
+      logger.warn('Note view failed', { error: String(error), t });
+      res.status(404).type('text/plain').send('note introuvable');
+    }
+  });
+
   // The triage surface: pending tasks + fresh 08-auto proposals, each one-tap.
   app.get('/revue', async (req: Request, res: Response) => {
     if (!gate(req, res)) return;
@@ -511,21 +594,31 @@ export function registerValidationRoutes(
         }
       }
 
+      const nEchec = tasks.filter(t => t.statut === 'echouee').length;
+
       const taskCards = tasks
         .map(t => {
           const tp = encodeURIComponent(t.path);
-          const primary =
+          const kind =
             t.statut === 'a-valider'
-              ? `<a class="btn ok" href="/valide?k=${k}&t=${tp}">Valider</a>`
+              ? { pill: 'ok', label: 'à valider', primary: 'Valider', href: 'valide' }
               : t.statut === 'echouee'
-                ? `<a class="btn go" href="/approuve?k=${k}&t=${tp}">Relancer</a>`
-                : `<a class="btn go" href="/approuve?k=${k}&t=${tp}">Approuver</a>`;
-          const tag =
-            t.statut === 'a-valider' ? 'à valider' : t.statut === 'echouee' ? 'échouée, à relancer' : 'risqué, à approuver';
-          return `<div class="card"><span class="tag">tâche · ${tag}</span>
+                ? { pill: 'bad', label: 'échouée', primary: 'Relancer', href: 'approuve' }
+                : { pill: 'warn', label: 'à approuver', primary: 'Approuver', href: 'approuve' };
+          // Le résumé pliable : ce que le chef a produit (ou ce qui a été
+          // demandé si rien n'a encore été produit). Darius décide sans partir.
+          const summary = t.resultat || t.demande;
+          const detail = [
+            t.demande ? `<p class="lbl">Demandé</p><p class="det">${escapeHtml(t.demande)}</p>` : '',
+            t.resultat ? `<p class="lbl">Produit</p><p class="det">${escapeHtml(t.resultat)}</p>` : '',
+            `<a class="note" href="/note?k=${k}&t=${tp}">Ouvrir la note complète →</a>`,
+          ].join('');
+          return `<div class="card">
+            <div class="head"><span class="pill ${kind.pill}">${kind.label}</span><span class="date">${escapeHtml(t.date)}</span></div>
             <p class="txt">${escapeHtml(t.title)}</p>
-            <div class="row">${primary}
-            <a class="btn ko" href="/rejette?k=${k}&t=${tp}">Rejeter</a></div></div>`;
+            ${summary ? `<details><summary>${escapeHtml((summary || '').slice(0, 90))}${summary.length > 90 ? '…' : ''}</summary>${detail}</details>` : `<a class="note" href="/note?k=${k}&t=${tp}">Ouvrir la note complète →</a>`}
+            <div class="row"><a class="btn ${kind.pill === 'ok' ? 'ok' : 'go'}" href="/${kind.href}?k=${k}&t=${tp}">${kind.primary}</a>
+            <a class="btn ko" href="/rejette?k=${k}&t=${tp}">${t.statut === 'echouee' ? 'Abandonner' : 'Rejeter'}</a></div></div>`;
         })
         .join('');
 
@@ -533,23 +626,38 @@ export function registerValidationRoutes(
         .map(p => {
           const f = encodeURIComponent(p.file);
           const h = encodeURIComponent(p.hash);
-          return `<div class="card"><span class="tag">${escapeHtml(p.label)}</span>
+          return `<div class="card">
+            <div class="head"><span class="pill idea">${escapeHtml(p.label)}</span></div>
             <p class="txt">${escapeHtml(cleanText(p.text))}</p>
             <div class="row">
-            <a class="btn go" href="/prop?k=${k}&a=tache&f=${f}&h=${h}">En tâche</a>
+            <a class="btn go" href="/prop?k=${k}&a=tache&f=${f}&h=${h}">En faire une tâche</a>
             <a class="btn ko" href="/prop?k=${k}&a=jeter&f=${f}&h=${h}">Jeter</a></div></div>`;
         })
         .join('');
 
+      const legende =
+        `<div class="legend">
+          <p><b>Comment ça marche.</b> Le cerveau a fait le travail ; toi tu tranches d'un tap.</p>
+          <ul>
+            <li><b>Valider</b> garde le livrable. <b>Rejeter</b> le jette.</li>
+            <li><b>Approuver</b> lance une tâche risquée. <b>Relancer</b> renvoie une tâche échouée au chef.</li>
+            <li><b>En faire une tâche</b> envoie une idée au chef de chantier.</li>
+            <li>Touche le résumé pour le déplier, ou « Ouvrir la note complète ».</li>
+          </ul>
+        </div>`;
+
       const body =
-        `<h1>Revue du cerveau</h1>
-         <p class="sub">Un tap par proposition. Valider garde, rejeter jette, « en tâche » envoie au chef de chantier.</p>` +
+        `<h1>Revue du cerveau</h1>` +
+        `<p class="sub">${tasks.length} tâche(s) et ${props.length} idée(s) t'attendent. Les plus récentes en premier.` +
+        (nEchec > 0 ? ` <b class="fire">${nEchec} échouée(s) à relancer en haut.</b>` : '') +
+        `</p>` +
+        legende +
         `<h2>Tâches prêtes (${tasks.length})</h2>` +
-        (taskCards || '<p class="empty">Rien à valider.</p>') +
-        `<h2>Propositions (${props.length})</h2>` +
-        (propCards || '<p class="empty">Aucune proposition fraîche.</p>') +
+        (taskCards || '<p class="empty">Rien à valider. La file est vide.</p>') +
+        `<h2>Idées à trier (${props.length})</h2>` +
+        (propCards || '<p class="empty">Aucune idée fraîche.</p>') +
         (hiddenCount > 0
-          ? `<p class="sub" style="margin-top:10px">${hiddenCount} proposition(s) déjà réglée(s), masquée(s).</p>`
+          ? `<p class="sub" style="margin-top:14px">${hiddenCount} idée(s) déjà réglée(s), masquée(s).</p>`
           : '');
 
       res.type('text/html').send(page('Revue du cerveau', body));
@@ -559,6 +667,6 @@ export function registerValidationRoutes(
     }
   });
 
-  logger.info('Validation routes registered (/valide, /rejette, /approuve, /revue, /prop)');
+  logger.info('Validation routes registered (/valide, /rejette, /approuve, /revue, /prop, /note)');
   return true;
 }
