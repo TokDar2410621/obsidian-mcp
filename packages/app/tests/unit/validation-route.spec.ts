@@ -165,6 +165,34 @@ describe('listPendingTasks', () => {
     expect(paths).toEqual(['09-taches/a.md', '09-taches/b.md']);
     expect(pending.find(p => p.path === '09-taches/b.md')?.statut).toBe('proposee');
   });
+
+  it('ordonne : échouées d abord, puis du plus récent au plus ancien', async () => {
+    const dated = (statut: string, created: string, risque = 'sans-risque') =>
+      `---\ntype: tache\nstatut: ${statut}\nrisque: ${risque}\ncreated: ${created}\n---\n\n# T ${created}\n\n## Demande\nx\n`;
+    const v = new FakeVault();
+    v.files.set('09-taches/vieille.md', dated('a-valider', '2026-07-01'));
+    v.files.set('09-taches/recente.md', dated('a-valider', '2026-07-20'));
+    v.files.set('09-taches/echec-vieux.md', dated('echouee', '2026-06-15'));
+    const pending = await listPendingTasks(v);
+    // Échouée en tête malgré sa date ancienne, puis récente avant vieille.
+    expect(pending.map(p => p.path)).toEqual([
+      '09-taches/echec-vieux.md',
+      '09-taches/recente.md',
+      '09-taches/vieille.md',
+    ]);
+  });
+
+  it('extrait le résumé du Résultat pour la carte', async () => {
+    const v = new FakeVault();
+    v.files.set(
+      '09-taches/r.md',
+      `---\ntype: tache\nstatut: a-valider\nrisque: sans-risque\ncreated: 2026-07-20\n---\n\n# Tâche\n\n## Demande\nfais X\n\n## Résultat\n\n**2026-07-20 10:00**\n\nresume: le livrable est prêt, brouillon dans Gmail\n`,
+    );
+    const [t] = await listPendingTasks(v);
+    expect(t.demande).toContain('fais X');
+    expect(t.resultat).toContain('le livrable est prêt');
+    expect(t.resultat).not.toContain('2026-07-20 10:00'); // horodatage retiré
+  });
 });
 
 describe('setTaskStatus', () => {
