@@ -1,5 +1,6 @@
 import type { Express, Request, Response } from 'express';
 import type { VaultManager } from '@/services/vault-manager';
+import { readAllFiles } from '@/services/vault-manager';
 import type { ConclusionsRegistry } from '@/services/conclusions/conclusions-registry';
 import { logger } from '@/utils/logger';
 
@@ -281,18 +282,17 @@ export async function listPendingTasks(vault: VaultManager): Promise<PendingTask
   } catch {
     return [];
   }
+  // ONE bulk read of all candidate task files. The per-file readFile path
+  // costs a full git sync EACH (serialized): with 60+ pending tasks, /revue
+  // took ~2 minutes and timed out (Darius, 2026-07-24). readAllFiles = 1 sync.
+  const candidates = files
+    .map(f => f.replace(/\\/g, '/'))
+    .filter(rel => rel.endsWith('.md') && !(rel.split('/').pop() as string).startsWith('_'));
+  const contents = await readAllFiles(vault, candidates);
+
   const out: PendingTask[] = [];
-  for (const f of files) {
-    const rel = f.replace(/\\/g, '/');
-    if (!rel.endsWith('.md')) continue;
+  for (const [rel, content] of contents) {
     const base = rel.split('/').pop() as string;
-    if (base.startsWith('_')) continue;
-    let content = '';
-    try {
-      content = await vault.readFile(rel);
-    } catch {
-      continue;
-    }
     const statut = (/^statut\s*:\s*(.*)$/m.exec(content)?.[1] ?? '').trim();
     const risque = (/^risque\s*:\s*(.*)$/m.exec(content)?.[1] ?? '').trim();
     // a-valider: done and verified, awaiting keep/drop.
@@ -388,13 +388,14 @@ export async function collectDailyPropositions(vault: VaultManager): Promise<Pro
 
 export async function collectPropositions(vault: VaultManager): Promise<Proposition[]> {
   const all: Proposition[] = [];
+  // One bulk read of the 08-auto proposal files (same git-sync-per-file fix).
+  const contents = await readAllFiles(
+    vault,
+    PROP_SOURCES.map(s => s.file),
+  );
   for (const src of PROP_SOURCES) {
-    let content = '';
-    try {
-      content = await vault.readFile(src.file);
-    } catch {
-      continue;
-    }
+    const content = contents.get(src.file);
+    if (content === undefined) continue;
     all.push(...parsePropositions(src.file, src.label, content));
   }
   // The orphan channel: proposals the ingestion left in the newest daily note.
