@@ -89,6 +89,22 @@ export function cleanText(text: string, max = 200): string {
 const escapeHtml = (s: string): string =>
   s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string);
 
+/**
+ * Clean an optional free-text reason Darius typed in /revue: cap length, drop control
+ * chars, neutralize em-dash (the vault's zero-em-dash rule). Empty -> undefined so the
+ * note field is simply absent when he types nothing (it is optional).
+ */
+export function sanitizeNote(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  const t = raw
+    .replace(/[\u2013\u2014]/g, ' : ')
+    .replace(/[\u0000-\u0008\u000e-\u001f\u007f-\u009f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 280);
+  return t || undefined;
+}
+
 export interface Proposition {
   file: string;
   label: string;
@@ -415,6 +431,27 @@ export async function setTaskStatus(
   return { from, title };
 }
 
+/**
+ * Append a dated line under a task note's `## Journal` (or at the end if the heading is
+ * absent). Used to keep an OPTIONAL typed reason on /approuve (approve a risky task /
+ * relaunch a failed one): that decision records no conclusion, but Darius may still say
+ * why, and this is the most useful moment for it. Documentary, never throws (must not
+ * break the tap), and no note is passed unless he typed one.
+ */
+export async function appendTaskNote(vault: VaultManager, taskPath: string, line: string): Promise<void> {
+  try {
+    const content = await vault.readFile(taskPath);
+    const entry = `- ${line}`;
+    const m = /^##\s+Journal\s*$/m.exec(content);
+    const next = m
+      ? `${content.slice(0, m.index + m[0].length)}\n${entry}${content.slice(m.index + m[0].length)}`
+      : `${content.replace(/\n+$/, '')}\n\n${entry}\n`;
+    await vault.writeFile(taskPath, next);
+  } catch (error) {
+    logger.warn('Task note append failed', { error: String(error), taskPath });
+  }
+}
+
 export async function dropProposition(
   vault: VaultManager,
   file: string,
@@ -457,6 +494,7 @@ export interface BoucleExample {
   statut: 'promu' | 'valide' | 'refuse';
   raison?: string;
   origine: string;
+  note?: string; // free-text reason Darius optionally typed (documented, not used for weighting)
 }
 
 /**
@@ -518,6 +556,8 @@ details[open] summary::before{content:"▾ "}
 .det{font-size:14px;color:#c7d0da;margin:0 0 6px;white-space:pre-wrap}
 a.note{display:inline-block;margin:4px 0 2px;color:#7dd3fc;text-decoration:none;font-size:14px}
 .row{display:flex;gap:8px;margin-top:4px}
+input.rz{width:100%;margin:2px 0 10px;padding:9px 11px;background:#0e151d;border:1px solid #26313d;border-radius:10px;color:#e6edf3;font:14px inherit}
+input.rz::placeholder{color:#5b6572}
 .row.rj{margin-top:8px}
 .row.rj a.btn{font-size:12px;padding:9px 3px;font-weight:500;background:#3a1414}
 .row.rj a.btn:active{background:#4c1a1a}
@@ -533,7 +573,9 @@ function page(title: string, body: string): string {
   return `<!doctype html><html lang="fr"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0b0f14"><title>${escapeHtml(title)}</title>
-<style>${CSS}</style></head><body><main>${body}</main></body></html>`;
+<style>${CSS}</style></head><body><main>${body}</main>
+<script>document.addEventListener('click',function(e){var a=e.target.closest('a.btn');if(!a)return;var card=a.closest('.card');if(!card)return;var inp=card.querySelector('input.rz');if(inp&&inp.value.trim()){e.preventDefault();var u=new URL(a.href,location.origin);u.searchParams.set('note',inp.value.trim());location.href=u.toString();}});</script>
+</body></html>`;
 }
 
 function confirm(title: string, sub: string, token: string): string {
@@ -564,10 +606,15 @@ export function registerValidationRoutes(
   // Metacognition: every one-tap decision feeds the conclusions registry, so
   // proposers can stop re-proposing what Darius already settled. Fire-and-log:
   // a registry failure must never break the tap itself.
-  const remember = (text: string | null, source: string, status: 'valide' | 'rejete' | 'refuse' | 'promu') => {
+  const remember = (
+    text: string | null,
+    source: string,
+    status: 'valide' | 'rejete' | 'refuse' | 'promu',
+    note?: string,
+  ) => {
     if (!registry || !text) return;
     registry
-      .record({ text, source, status })
+      .record({ text, source, status, note })
       .catch(error => logger.warn('Conclusions record failed', { error: String(error), source, status }));
   };
 
@@ -596,8 +643,12 @@ export function registerValidationRoutes(
           res.type('text/html').send(confirm('Introuvable', 'Cette tâche n’existe plus.', token));
           return;
         }
+        const note = sanitizeNote(typeof req.query.note === 'string' ? req.query.note : undefined);
         const { from, title } = await setTaskStatus(vault, t, to);
-        if (recordAs) remember(title, t, recordAs);
+        // valide/rejete record a conclusion (with the note). approuve/relance has no
+        // conclusion, so a typed reason would be lost: keep it in the task's Journal.
+        if (recordAs) remember(title, t, recordAs, note);
+        else if (note) await appendTaskNote(vault, t, `[${to} ${day()}] ${note}`);
         logger.info('Task status flipped', { task: t, from, to });
         res.type('text/html').send(confirm(label, `Statut : ${from ?? '?'} → ${to}.`, token));
       } catch (error) {
@@ -620,6 +671,7 @@ export function registerValidationRoutes(
     const file = String(req.query.f ?? '');
     const hash = String(req.query.h ?? '');
     const reason = String(req.query.r ?? '');
+    const note = sanitizeNote(typeof req.query.note === 'string' ? req.query.note : undefined);
     const allowed = PROP_BY_FILE.has(file) || DAILY_PATH_RE.test(file);
     if (!allowed || !hash) {
       res.status(400).type('text/plain').send('bad proposal ref');
@@ -640,7 +692,7 @@ export function registerValidationRoutes(
     const learn = async (label: 0 | 1, statut: 'promu' | 'valide' | 'refuse', r?: string): Promise<void> => {
       if (!axes) return;
       try {
-        await appendBoucleExample(vault, { axes, label, statut, raison: r, origine });
+        await appendBoucleExample(vault, { axes, label, statut, raison: r, origine, note });
       } catch (error) {
         logger.warn('Boucle example append failed', { error: String(error), file, statut });
       }
@@ -650,7 +702,7 @@ export function registerValidationRoutes(
       if (action === 'jeter') {
         const { removed } = await dropProposition(vault, file, hash);
         if (removed) {
-          remember(cleanText(removed), file, 'refuse');
+          remember(cleanText(removed), file, 'refuse', note);
           await learn(0, 'refuse', REASONS.has(reason) ? reason : undefined);
         }
         res.type('text/html').send(
@@ -666,7 +718,7 @@ export function registerValidationRoutes(
         // the file so the pont's content is preserved; it just stops being re-proposed.
         const text = findBullet(await vault.readFile(file), file, hash);
         if (text) {
-          remember(cleanText(text), file, 'valide');
+          remember(cleanText(text), file, 'valide', note);
           await learn(1, 'valide');
         }
         res.type('text/html').send(
@@ -679,7 +731,7 @@ export function registerValidationRoutes(
       if (action === 'tache') {
         const { path, text } = await promoteProposition(vault, file, hash);
         if (text) {
-          remember(text, file, 'promu');
+          remember(text, file, 'promu', note);
           await learn(1, 'promu');
         }
         res.type('text/html').send(
@@ -763,6 +815,7 @@ export function registerValidationRoutes(
             <div class="head"><span class="pill ${kind.pill}">${kind.label}</span><span class="date">${escapeHtml(t.date)}</span></div>
             <p class="txt">${escapeHtml(t.title)}</p>
             ${summary ? `<details><summary>${escapeHtml((summary || '').slice(0, 90))}${summary.length > 90 ? '…' : ''}</summary>${detail}</details>` : `<a class="note" href="/note?k=${k}&t=${tp}">Ouvrir la note complète →</a>`}
+            <input class="rz" placeholder="raison (optionnel)" maxlength="280">
             <div class="row"><a class="btn ${kind.pill === 'ok' ? 'ok' : 'go'}" href="/${kind.href}?k=${k}&t=${tp}">${kind.primary}</a>
             <a class="btn ko" href="/rejette?k=${k}&t=${tp}">${t.statut === 'echouee' ? 'Abandonner' : 'Rejeter'}</a></div></div>`;
         })
@@ -781,6 +834,7 @@ export function registerValidationRoutes(
           // Plain proposals keep the simple En tâche / Jeter.
           if (p.axes) {
             return `${head}
+            <input class="rz" placeholder="raison (optionnel)" maxlength="280">
             <div class="row">
             <a class="btn ok" href="/prop?k=${k}&a=garder&f=${f}&h=${h}">Garder</a>
             <a class="btn go" href="/prop?k=${k}&a=tache&f=${f}&h=${h}">En tâche</a></div>
@@ -791,6 +845,7 @@ export function registerValidationRoutes(
             <a class="btn ko" href="/prop?k=${k}&a=jeter&r=faux&f=${f}&h=${h}">faux</a></div></div>`;
           }
           return `${head}
+            <input class="rz" placeholder="raison (optionnel)" maxlength="280">
             <div class="row">
             <a class="btn go" href="/prop?k=${k}&a=tache&f=${f}&h=${h}">En faire une tâche</a>
             <a class="btn ko" href="/prop?k=${k}&a=jeter&f=${f}&h=${h}">Jeter</a></div></div>`;

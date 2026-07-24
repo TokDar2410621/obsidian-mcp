@@ -139,4 +139,12 @@ describe('refusedMask (batched)', () => {
     ]);
     expect(mask).toEqual([true, false, false]);
   });
+
+  it('re-deciding without a note clears the stale note (note reflects the current decision)', async () => {
+    const { reg } = make();
+    await reg.record({ text: 'proposition X', source: 'x', status: 'refuse', note: 'doublon' });
+    const updated = await reg.record({ text: 'proposition X', source: 'x', status: 'valide' });
+    expect(updated.status).toBe('valide');
+    expect(updated.note).toBeUndefined();
+  });
 });
