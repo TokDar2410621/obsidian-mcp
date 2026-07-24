@@ -559,6 +559,8 @@ a.note{display:inline-block;margin:4px 0 2px;color:#7dd3fc;text-decoration:none;
 input.rz{width:100%;margin:2px 0 10px;padding:9px 11px;background:#0e151d;border:1px solid #26313d;border-radius:10px;color:#e6edf3;font:14px inherit}
 input.rz::placeholder{color:#5b6572}
 .row.rj{margin-top:8px}
+.toast{position:fixed;left:50%;bottom:-70px;transform:translateX(-50%);background:#16a34a;color:#fff;padding:12px 20px;border-radius:12px;font-weight:600;font-size:15px;box-shadow:0 8px 24px rgba(0,0,0,.45);opacity:0;transition:opacity .25s,bottom .25s;z-index:50;max-width:90vw;text-align:center}
+.toast.show{opacity:1;bottom:24px}
 .row.rj a.btn{font-size:12px;padding:9px 3px;font-weight:500;background:#3a1414}
 .row.rj a.btn:active{background:#4c1a1a}
 a.btn{flex:1;text-align:center;text-decoration:none;border-radius:12px;padding:14px;font-weight:600;font-size:15px;color:#fff}
@@ -574,7 +576,25 @@ function page(title: string, body: string): string {
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0b0f14"><title>${escapeHtml(title)}</title>
 <style>${CSS}</style></head><body><main>${body}</main>
-<script>document.addEventListener('click',function(e){var a=e.target.closest('a.btn');if(!a)return;var card=a.closest('.card');if(!card)return;var inp=card.querySelector('input.rz');if(inp&&inp.value.trim()){e.preventDefault();var u=new URL(a.href,location.origin);u.searchParams.set('note',inp.value.trim());location.href=u.toString();}});</script>
+<script>
+function toast(m){var t=document.createElement('div');t.className='toast';t.textContent='✓ '+m;document.body.appendChild(t);requestAnimationFrame(function(){t.classList.add('show')});setTimeout(function(){t.classList.remove('show');setTimeout(function(){t.remove()},300)},1700)}
+document.addEventListener('click',function(e){
+  var a=e.target.closest('a.btn');if(!a)return;
+  e.preventDefault();
+  if(a.dataset.busy)return;
+  var card=a.closest('.card');
+  var url=a.href;
+  var inp=card&&card.querySelector('input.rz');
+  if(inp&&inp.value.trim()){var u=new URL(url,location.origin);u.searchParams.set('note',inp.value.trim());url=u.toString()}
+  if(!window.fetch){location.href=url;return}
+  a.dataset.busy='1';if(card)card.style.opacity='0.45';
+  fetch(url).then(function(r){
+    if(!r.ok)throw 0;
+    toast(a.textContent.trim());
+    if(card){card.style.transition='opacity .2s';card.style.opacity='0';setTimeout(function(){card.remove()},210)}
+  }).catch(function(){toast('erreur, reessaie');a.dataset.busy='';if(card)card.style.opacity=''});
+});
+</script>
 </body></html>`;
 }
 
