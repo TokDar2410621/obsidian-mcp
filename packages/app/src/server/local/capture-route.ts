@@ -21,6 +21,7 @@ function escapeText(text: string): string {
 
 const INBOX_DIR = '01-raw/inbox';
 const TACHES_DIR = '09-taches';
+const AUTO_DIR = '08-auto';
 
 const CORS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
@@ -207,6 +208,41 @@ export function registerCaptureRoute(app: Express, vault: VaultManager): boolean
     const text = clean(req.body?.text ?? req.query.text);
     if (!url && !text) {
       res.status(400).json({ error: 'need url or text' });
+      return;
+    }
+
+    // "probleme: ..." registers an open problem Darius wants the cerveau to
+    // watch. The réacteur matches every new entry against this registry and
+    // proposes a solution when one dissolves a listed problem (Darius, 2026-07-26).
+    const probleme = /^probl[eè]me\s*:\s*(.+)$/is.exec(text);
+    if (probleme) {
+      const item = probleme[1].replace(/\s+/g, ' ').trim();
+      try {
+        await vault.createDirectory(AUTO_DIR, true);
+        const file = `${AUTO_DIR}/_problemes.md`;
+        const base = (await vault.fileExists(file))
+          ? await vault.readFile(file)
+          : [
+              '---',
+              'type: note',
+              'tags: [auto, problemes]',
+              '---',
+              '',
+              '# Problèmes ouverts de Darius',
+              '',
+              '> La liste vivante de tes vrais goulots et blocages. Le réacteur propose une',
+              "> solution quand une entrée en résout un. Coche [x] quand c'est réglé.",
+              '',
+              '## Ouverts',
+              '',
+            ].join('\n');
+        await vault.writeFile(file, `${base.replace(/\s*$/, '')}\n- [ ] ${item} (ajouté: ${day()})\n`);
+        logger.info('Capture probleme added', { file });
+        res.status(200).json({ ok: true, file, probleme: true });
+      } catch (error) {
+        logger.error('Capture probleme failed', { error: String(error) });
+        res.status(500).json({ error: 'write failed' });
+      }
       return;
     }
 
