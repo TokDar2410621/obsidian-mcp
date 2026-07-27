@@ -45,6 +45,8 @@ import { MorningBriefService } from '@/services/brief/morning-brief';
 import { scheduleMorningBrief } from '@/services/brief/morning-brief-cron';
 import { RelanceSweepService } from '@/services/relance/relance-sweep';
 import { scheduleRelanceSweep } from '@/services/relance/relance-cron';
+import { StripeProbeService } from '@/services/sensors/stripe-probe';
+import { scheduleStripeProbe } from '@/services/sensors/stripe-probe-cron';
 import { createNotifier, createNotificationJournal } from '@/services/notify/notifier';
 import { registerCaptureRoute } from '@/server/local/capture-route';
 import { registerValidationRoutes } from '@/server/local/validation-route';
@@ -229,6 +231,12 @@ const relanceSweep = new RelanceSweepService({
   token: process.env.CAPTURE_TOKEN || null,
 });
 
+// Stripe sensor probe (one eye on the money): reads the Stripe event log
+// read-only, keeps only the notable (paiement, abonnement, remboursement,
+// litige) into 01-raw/stripe/, pushes ntfy on news. Dormant without
+// STRIPE_API_KEY, so it needs no RAG and no key to be constructed.
+const stripeProbe = new StripeProbeService({ vault: vaultManager, notify: notifier });
+
 // Optional object-storage tools (put-file / get-file) backed by an S3-compatible
 // bucket (e.g. a Railway Bucket). Null unless the bucket env vars are set — keeps
 // binaries (images, PDFs) out of the git vault. Independent of RAG/Anthropic.
@@ -396,6 +404,17 @@ Configure ChatGPT/Claude with:
       })
       .catch((error: any) => console.error('✗ RAG index build failed:', error?.message ?? error));
   }
+
+  // Sensors don't depend on the RAG index (money is read straight from Stripe),
+  // so they schedule outside the RAG block: a slow or failed index must never
+  // blind the cerveau to a payment. Dormant without STRIPE_API_KEY.
+  scheduleStripeProbe(stripeProbe);
+  stripeProbe
+    .runProbe()
+    .then(s => {
+      if (!s.skipped) console.log('✓ Stripe probe (boot)', s);
+    })
+    .catch(error => console.error('Stripe probe (boot) failed', error));
 });
 
 // Graceful shutdown. Railway stops the old container with SIGTERM on every
