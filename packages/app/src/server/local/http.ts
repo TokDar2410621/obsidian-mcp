@@ -47,6 +47,8 @@ import { RelanceSweepService } from '@/services/relance/relance-sweep';
 import { scheduleRelanceSweep } from '@/services/relance/relance-cron';
 import { StripeProbeService } from '@/services/sensors/stripe-probe';
 import { scheduleStripeProbe } from '@/services/sensors/stripe-probe-cron';
+import { CalendarProbeService } from '@/services/sensors/calendar-probe';
+import { scheduleCalendarProbe } from '@/services/sensors/calendar-probe-cron';
 import { createNotifier, createNotificationJournal } from '@/services/notify/notifier';
 import { registerCaptureRoute } from '@/server/local/capture-route';
 import { registerValidationRoutes } from '@/server/local/validation-route';
@@ -237,6 +239,11 @@ const relanceSweep = new RelanceSweepService({
 // STRIPE_API_KEY, so it needs no RAG and no key to be constructed.
 const stripeProbe = new StripeProbeService({ vault: vaultManager, notify: notifier });
 
+// Calendar sensor probe (one eye on time): lists upcoming events read-only and
+// keeps the new + rescheduled ones into 01-raw/calendar/, pushes ntfy on news.
+// Dormant without the GOOGLE_OAUTH_* refresh-token credentials.
+const calendarProbe = new CalendarProbeService({ vault: vaultManager, notify: notifier });
+
 // Optional object-storage tools (put-file / get-file) backed by an S3-compatible
 // bucket (e.g. a Railway Bucket). Null unless the bucket env vars are set — keeps
 // binaries (images, PDFs) out of the git vault. Independent of RAG/Anthropic.
@@ -405,9 +412,9 @@ Configure ChatGPT/Claude with:
       .catch((error: any) => console.error('✗ RAG index build failed:', error?.message ?? error));
   }
 
-  // Sensors don't depend on the RAG index (money is read straight from Stripe),
-  // so they schedule outside the RAG block: a slow or failed index must never
-  // blind the cerveau to a payment. Dormant without STRIPE_API_KEY.
+  // Sensors don't depend on the RAG index (money and time are read straight
+  // from their APIs), so they schedule outside the RAG block: a slow or failed
+  // index must never blind the cerveau. Each is dormant without its credential.
   scheduleStripeProbe(stripeProbe);
   stripeProbe
     .runProbe()
@@ -415,6 +422,13 @@ Configure ChatGPT/Claude with:
       if (!s.skipped) console.log('✓ Stripe probe (boot)', s);
     })
     .catch(error => console.error('Stripe probe (boot) failed', error));
+  scheduleCalendarProbe(calendarProbe);
+  calendarProbe
+    .runProbe()
+    .then(s => {
+      if (!s.skipped) console.log('✓ Calendar probe (boot)', s);
+    })
+    .catch(error => console.error('Calendar probe (boot) failed', error));
 });
 
 // Graceful shutdown. Railway stops the old container with SIGTERM on every
