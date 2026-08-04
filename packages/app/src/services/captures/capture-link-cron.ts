@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import type { CaptureLinkSweepService } from '@/services/captures/capture-link-sweep';
 import { logger } from '@/utils/logger';
+import { pouls } from '@/services/health/pouls';
 
 const DEFAULT_SCHEDULE = '45 6 * * *'; // 06:45 server time (UTC), daily, just after the objective sweep
 
@@ -24,8 +25,14 @@ export function scheduleCaptureLinkSweep(sweep: CaptureLinkSweepService): boolea
   cron.schedule(schedule, () => {
     sweep
       .runSweep()
-      .then(result => logger.info('Capture link sweep (cron) done', { ...result }))
-      .catch(error => logger.error('Capture link sweep (cron) failed', { error: String(error) }));
+      .then(result => {
+        pouls.marque('sweep-captures', true);
+        logger.info('Capture link sweep (cron) done', { ...result });
+      })
+      .catch(error => {
+        pouls.marque('sweep-captures', false, String(error));
+        logger.error('Capture link sweep (cron) failed', { error: String(error) });
+      });
   });
   logger.info('Capture link sweep scheduled', { schedule });
   return true;

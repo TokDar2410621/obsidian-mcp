@@ -2,6 +2,7 @@ import cron from 'node-cron';
 import type { VaultManager } from '@/services/vault-manager';
 import type { LearningService } from '@/services/learning/learning-service';
 import { logger } from '@/utils/logger';
+import { pouls } from '@/services/health/pouls';
 
 const MAINTENANCE_FILE = '00-maintenance.md';
 const DEFAULT_SCHEDULE = '0 9 * * 1'; // Monday 09:00 (after the Synapses digest at 08:00)
@@ -33,8 +34,10 @@ async function run(learning: LearningService, vault: VaultManager): Promise<void
     logger.info('Maintenance report starting');
     const markdown = await learning.maintenanceMarkdown();
     await vault.writeFile(MAINTENANCE_FILE, markdown);
+    pouls.marque('maintenance-hebdo', true, undefined, { direct: true });
     logger.info('Maintenance report written', { file: MAINTENANCE_FILE });
   } catch (error) {
+    pouls.marque('maintenance-hebdo', false, String(error), { direct: true });
     logger.error('Maintenance report failed', { error: String(error) });
   }
 }

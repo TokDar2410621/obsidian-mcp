@@ -2,6 +2,7 @@ import cron from 'node-cron';
 import type { VaultManager } from '@/services/vault-manager';
 import type { SynapsesService } from '@/services/synapses/synapses-service';
 import { logger } from '@/utils/logger';
+import { pouls } from '@/services/health/pouls';
 
 const DIGEST_FILE = '00-synapses.md';
 const DEFAULT_SCHEDULE = '0 8 * * 1'; // Monday 08:00 (server time)
@@ -36,8 +37,10 @@ async function runDigest(synapses: SynapsesService, vault: VaultManager): Promis
     logger.info('Synapses digest starting');
     const markdown = await synapses.digestMarkdown();
     await vault.writeFile(DIGEST_FILE, markdown);
+    pouls.marque('synapses-digest', true, undefined, { direct: true });
     logger.info('Synapses digest written', { file: DIGEST_FILE });
   } catch (error) {
+    pouls.marque('synapses-digest', false, String(error), { direct: true });
     logger.error('Synapses digest failed', { error: String(error) });
   }
 }

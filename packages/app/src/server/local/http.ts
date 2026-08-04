@@ -53,6 +53,12 @@ import { createNotifier, createNotificationJournal } from '@/services/notify/not
 import { registerCaptureRoute } from '@/server/local/capture-route';
 import { registerValidationRoutes } from '@/server/local/validation-route';
 import { registerTelemetryRoute, telemetrySnapshot } from '@/server/local/telemetry-route';
+import { registerPoussoirRoutes } from '@/server/local/poussoir-route';
+import { pouls } from '@/services/health/pouls';
+import { BattementDeCoeur } from '@/services/health/battement';
+import { scheduleBattement } from '@/services/health/battement-cron';
+import { PoussoirService } from '@/services/poussoir/poussoir';
+import { schedulePoussoir } from '@/services/poussoir/poussoir-cron';
 import { createMemoryStrength } from '@/services/memory/memory-strength';
 import { createConclusionsRegistry } from '@/services/conclusions/conclusions-registry';
 import { createBucketStore } from '@/services/storage/bucket-store';
@@ -244,6 +250,25 @@ const stripeProbe = new StripeProbeService({ vault: vaultManager, notify: notifi
 // Dormant without the GOOGLE_OAUTH_* refresh-token credentials.
 const calendarProbe = new CalendarProbeService({ vault: vaultManager, notify: notifier });
 
+// Battement de coeur (the watchman): audits every component's proof-of-life
+// (PC2 worker beats + server cron pouls marks) and SCREAMS when one sleeps.
+// Lives outside the RAG block: a broken index must never blind the watchman.
+const battement = new BattementDeCoeur({
+  vault: vaultManager,
+  notify: notifier,
+  telemetry: telemetrySnapshot,
+  poulsSnapshot: () => pouls.instantane(),
+});
+
+// Poussoir (the daily push to ACT): one fully-prepared visibility gesture a
+// day, an evening relance when it is dodged, a streak on the line.
+const poussoirService = new PoussoirService({
+  vault: vaultManager,
+  notify: notifier,
+  baseUrl: BASE_URL,
+  token: process.env.CAPTURE_TOKEN || null,
+});
+
 // Optional object-storage tools (put-file / get-file) backed by an S3-compatible
 // bucket (e.g. a Railway Bucket). Null unless the bucket env vars are set — keeps
 // binaries (images, PDFs) out of the git vault. Independent of RAG/Anthropic.
@@ -293,6 +318,7 @@ registerValidationRoutes(app, vaultManager, conclusionsRegistry);
 
 // Workers' HTTP heartbeat: their voice when the git clone is frozen.
 registerTelemetryRoute(app);
+registerPoussoirRoutes(app, poussoirService);
 
 // A connector that dies must become a push on Darius's phone, never a silent
 // surprise discovered mid-task. Rate-limited: one alert per 12h max.
@@ -383,16 +409,28 @@ Configure ChatGPT/Claude with:
           // have landed while the container was down.
           objectiveSweep
             .runSweep()
-            .then(s => console.log('✓ Objective sweep (boot)', s))
-            .catch(error => console.error('Objective sweep (boot) failed', error));
+            .then(s => {
+              pouls.marque('sweep-objectifs', true);
+              console.log('✓ Objective sweep (boot)', s);
+            })
+            .catch(error => {
+              pouls.marque('sweep-objectifs', false, String(error));
+              console.error('Objective sweep (boot) failed', error);
+            });
         }
         if (captureLink) {
           scheduleCaptureLinkSweep(captureLink);
           // Catch-up at boot: link any captures that landed while down.
           captureLink
             .runSweep()
-            .then(s => console.log('✓ Capture link sweep (boot)', s))
-            .catch(error => console.error('Capture link sweep (boot) failed', error));
+            .then(s => {
+              pouls.marque('sweep-captures', true);
+              console.log('✓ Capture link sweep (boot)', s);
+            })
+            .catch(error => {
+              pouls.marque('sweep-captures', false, String(error));
+              console.error('Capture link sweep (boot) failed', error);
+            });
         }
         if (morningBrief) {
           scheduleMorningBrief(morningBrief);
@@ -415,18 +453,51 @@ Configure ChatGPT/Claude with:
   // Sensors don't depend on the RAG index (money and time are read straight
   // from their APIs), so they schedule outside the RAG block: a slow or failed
   // index must never blind the cerveau. Each is dormant without its credential.
+  // The pulse loads its persisted marks, then the watchman takes its post.
+  // Boot audit is DELAYED so the boot catch-up runs above (which DO mark the
+  // pulse) finish first: an audit at second zero would scream about crons the
+  // deploy interrupted. SANTE=off silences the boot audit too, not just the
+  // cron: a "disabled" watchman that still screams once per deploy is not
+  // disabled. The scream itself is throttled in battement.ts, so redeploys
+  // add bulletins, never extra cries.
+  pouls
+    .lier(vaultManager)
+    .catch(error => console.error('pouls: chargement echoue', error))
+    .finally(() => {
+      const santeActive = scheduleBattement(battement);
+      if (santeActive) {
+        setTimeout(
+          () =>
+            battement
+              .battre()
+              .then(r => console.log('✓ Battement de coeur (boot)', { problemes: r.problemes.length }))
+              .catch(error => console.error('Battement de coeur (boot) failed', error)),
+          5 * 60 * 1000,
+        );
+      }
+    });
+  schedulePoussoir(poussoirService);
+
   scheduleStripeProbe(stripeProbe);
   stripeProbe
     .runProbe()
     .then(s => {
-      if (!s.skipped) console.log('✓ Stripe probe (boot)', s);
+      if (!s.skipped) {
+        const err = (s as { error?: string }).error;
+        pouls.marque('sonde-stripe', !err, err);
+        console.log('✓ Stripe probe (boot)', s);
+      }
     })
     .catch(error => console.error('Stripe probe (boot) failed', error));
   scheduleCalendarProbe(calendarProbe);
   calendarProbe
     .runProbe()
     .then(s => {
-      if (!s.skipped) console.log('✓ Calendar probe (boot)', s);
+      if (!s.skipped) {
+        const err = (s as { error?: string }).error;
+        pouls.marque('sonde-calendar', !err, err);
+        console.log('✓ Calendar probe (boot)', s);
+      }
     })
     .catch(error => console.error('Calendar probe (boot) failed', error));
 });
