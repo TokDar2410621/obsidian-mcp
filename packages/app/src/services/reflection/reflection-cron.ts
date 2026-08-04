@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import type { ReflectionService } from '@/services/reflection/reflection-service';
 import { logger } from '@/utils/logger';
+import { pouls } from '@/services/health/pouls';
 
 const DEFAULT_SCHEDULE = '0 6 * * *'; // 06:00 server time (UTC), daily
 
@@ -33,8 +34,10 @@ async function runReflection(reflection: ReflectionService): Promise<void> {
   try {
     logger.info('Daily reflection starting');
     const result = await reflection.runCycle();
+    pouls.marque('reflexion', true);
     logger.info('Daily reflection done', { date: result.date, processed: result.processed });
   } catch (error) {
+    pouls.marque('reflexion', false, String(error));
     logger.error('Daily reflection failed', { error: String(error) });
   }
 }

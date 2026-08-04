@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import type { MorningBriefService } from '@/services/brief/morning-brief';
 import { logger } from '@/utils/logger';
+import { pouls } from '@/services/health/pouls';
 
 const DEFAULT_SCHEDULE = '15 11 * * *'; // 11:15 UTC = 7:15 Montréal (été), après les sweeps du matin
 
@@ -25,8 +26,14 @@ export function scheduleMorningBrief(brief: MorningBriefService): boolean {
   cron.schedule(schedule, () => {
     brief
       .runBrief()
-      .then(result => logger.info('Morning brief (cron) done', { ...result }))
-      .catch(error => logger.error('Morning brief (cron) failed', { error: String(error) }));
+      .then(result => {
+        pouls.marque('brief-matin', true);
+        logger.info('Morning brief (cron) done', { ...result });
+      })
+      .catch(error => {
+        pouls.marque('brief-matin', false, String(error));
+        logger.error('Morning brief (cron) failed', { error: String(error) });
+      });
   });
   logger.info('Morning brief scheduled', { schedule });
   return true;

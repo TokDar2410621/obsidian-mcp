@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import type { ObjectiveSweepService } from '@/services/objectives/objective-sweep';
 import { logger } from '@/utils/logger';
+import { pouls } from '@/services/health/pouls';
 
 const DEFAULT_SCHEDULE = '30 6 * * *'; // 06:30 server time (UTC), daily — after the reflection
 
@@ -25,8 +26,14 @@ export function scheduleObjectiveSweep(sweep: ObjectiveSweepService): boolean {
   cron.schedule(schedule, () => {
     sweep
       .runSweep()
-      .then(result => logger.info('Objective sweep (cron) done', { ...result }))
-      .catch(error => logger.error('Objective sweep (cron) failed', { error: String(error) }));
+      .then(result => {
+        pouls.marque('sweep-objectifs', true);
+        logger.info('Objective sweep (cron) done', { ...result });
+      })
+      .catch(error => {
+        pouls.marque('sweep-objectifs', false, String(error));
+        logger.error('Objective sweep (cron) failed', { error: String(error) });
+      });
   });
   logger.info('Objective sweep scheduled', { schedule });
   return true;

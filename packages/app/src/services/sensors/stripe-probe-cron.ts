@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import type { StripeProbeService } from '@/services/sensors/stripe-probe';
 import { logger } from '@/utils/logger';
+import { pouls } from '@/services/health/pouls';
 
 const DEFAULT_SCHEDULE = '15 */6 * * *'; // every 6 hours at :15 (server/UTC)
 
@@ -25,8 +26,16 @@ export function scheduleStripeProbe(probe: StripeProbeService): boolean {
   cron.schedule(schedule, () => {
     probe
       .runProbe()
-      .then(result => logger.info('Stripe probe (cron) done', { ...result }))
-      .catch(error => logger.error('Stripe probe (cron) failed', { error: String(error) }));
+      .then(result => {
+        // La sonde RESOUT avec { error } quand le fetch echoue (blocage ASN vecu) :
+        // une resolution n'est un passage vert que sans erreur.
+        pouls.marque('sonde-stripe', !(result as { error?: string })?.error, (result as { error?: string })?.error);
+        logger.info('Stripe probe (cron) done', { ...result });
+      })
+      .catch(error => {
+        pouls.marque('sonde-stripe', false, String(error));
+        logger.error('Stripe probe (cron) failed', { error: String(error) });
+      });
   });
   logger.info('Stripe probe scheduled', { schedule });
   return true;

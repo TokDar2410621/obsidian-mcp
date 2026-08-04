@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import type { RelanceSweepService } from '@/services/relance/relance-sweep';
 import { logger } from '@/utils/logger';
+import { pouls } from '@/services/health/pouls';
 
 const DEFAULT_SCHEDULE = '5 22 * * *'; // 22:05 UTC = 18:05 Montréal (été) : fin de journée, l'heure des comptes
 
@@ -24,8 +25,14 @@ export function scheduleRelanceSweep(sweep: RelanceSweepService): boolean {
   cron.schedule(schedule, () => {
     sweep
       .runSweep()
-      .then(result => logger.info('Relance sweep (cron) done', { ...result }))
-      .catch(error => logger.error('Relance sweep (cron) failed', { error: String(error) }));
+      .then(result => {
+        pouls.marque('relance', true);
+        logger.info('Relance sweep (cron) done', { ...result });
+      })
+      .catch(error => {
+        pouls.marque('relance', false, String(error));
+        logger.error('Relance sweep (cron) failed', { error: String(error) });
+      });
   });
   logger.info('Relance sweep scheduled', { schedule });
   return true;
