@@ -1,3 +1,73 @@
+/**
+ * Garde-fou des chemins relatifs du vault (incident 2026-08-04) : une session
+ * Claude de PC1 a ecrit sa memoire via le MCP avec un chemin ABSOLU Windows ;
+ * le serveur (Linux, ou `\` et `:` sont des caracteres de nom legaux) a cree
+ * un fichier litteralement nomme `C:\Users\...\MEMORY.md` et l'a commite.
+ * Consequence : plus AUCUN clone Windows ne pouvait faire de checkout
+ * (`error: invalid path`), push PC2 en panne jusqu'au retrait chirurgical du
+ * fichier via l'API GitHub. Ce validateur est la ceinture cote serveur :
+ * backslashes normalises en `/`, puis REFUS de tout chemin absolu, traversant
+ * (`..`), ou imcheckoutable sous Windows (`:`, `< > " | ? *`, caracteres de
+ * controle, noms reserves CON/NUL/COM1..., segment finissant par point ou
+ * espace). Retourne le chemin normalise, a utiliser pour toute la suite.
+ */
+const WINDOWS_RESERVED_BASENAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+const WINDOWS_INVALID_CHARS = /[<>"|?*\u0000-\u001f]/;
+
+export function toVaultRelativePath(rawPath: string): string {
+  const raw = (rawPath ?? '').trim();
+  if (!raw) {
+    throw new Error(
+      'Chemin vide : donne un chemin RELATIF au vault, ex. "05-projects/x/note.md".',
+    );
+  }
+  const slashed = raw.replace(/\\/g, '/');
+  if (/^[a-zA-Z]:/.test(slashed) || slashed.startsWith('/') || slashed.startsWith('~')) {
+    throw new Error(
+      `Chemin refuse (${rawPath}) : chemin ABSOLU ou hors vault. Donne un chemin ` +
+        'RELATIF au vault, ex. "05-projects/x/note.md". Les chemins machine ' +
+        '(C:\\Users\\..., /home/..., ~/...) creent des fichiers imcheckoutables ' +
+        'sur Windows (panne push PC2 du 2026-08-04).',
+    );
+  }
+  if (slashed.includes(':')) {
+    throw new Error(
+      `Chemin refuse (${rawPath}) : ":" est interdit dans un nom de fichier ` +
+        'Windows (lecteur ou flux NTFS).',
+    );
+  }
+  if (WINDOWS_INVALID_CHARS.test(slashed)) {
+    throw new Error(
+      `Chemin refuse (${rawPath}) : caractere interdit sous Windows ` +
+        '(< > " | ? * ou caractere de controle).',
+    );
+  }
+  const segments = slashed.split('/').filter(s => s.length > 0 && s !== '.');
+  if (segments.length === 0) {
+    throw new Error(`Chemin refuse (${rawPath}) : aucun segment utilisable.`);
+  }
+  for (const seg of segments) {
+    if (seg === '..') {
+      throw new Error(
+        `Chemin refuse (${rawPath}) : ".." (sortie du vault) est interdit.`,
+      );
+    }
+    if (/[. ]$/.test(seg)) {
+      throw new Error(
+        `Chemin refuse (${rawPath}) : un segment finit par un point ou un ` +
+          'espace, imcheckoutable sous Windows.',
+      );
+    }
+    if (WINDOWS_RESERVED_BASENAME.test(seg.split('.')[0])) {
+      throw new Error(
+        `Chemin refuse (${rawPath}) : "${seg}" est un nom reserve Windows ` +
+          '(CON, NUL, COM1, ...).',
+      );
+    }
+  }
+  return segments.join('/');
+}
+
 export interface VaultManager {
   /**
    * Optional: lazy INTERNAL-STATE write (batched into one commit every few

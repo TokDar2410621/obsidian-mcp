@@ -2,7 +2,7 @@ import { simpleGit, SimpleGit } from 'simple-git';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { existsSync } from 'fs';
-import { VaultManager } from './vault-manager';
+import { VaultManager, toVaultRelativePath } from './vault-manager';
 import { logger } from '@/utils/logger';
 import { getAuthenticatedGitUrl } from './git-auth-provider';
 
@@ -252,6 +252,7 @@ export class GitVaultManager implements VaultManager {
    * Read a file from the vault
    */
   async readFile(relativePath: string): Promise<string> {
+    relativePath = toVaultRelativePath(relativePath);
     // A pending lazy write IS the current content: its author must read
     // back what it wrote, even before the batched flush hits the disk.
     const pending = this.lazyPending.get(relativePath);
@@ -280,13 +281,20 @@ export class GitVaultManager implements VaultManager {
       await this.initialize();
       const out = new Map<string, string>();
       for (const rel of relativePaths) {
-        const pending = this.lazyPending.get(rel);
+        // Contrat du bulk : les entrees illisibles sont sautees, jamais fatales.
+        let cleanRel: string;
+        try {
+          cleanRel = toVaultRelativePath(rel);
+        } catch {
+          continue;
+        }
+        const pending = this.lazyPending.get(cleanRel);
         if (pending !== undefined) {
           out.set(rel, pending);
           continue;
         }
         try {
-          out.set(rel, await fs.readFile(path.join(this.config.vaultPath, rel), 'utf-8'));
+          out.set(rel, await fs.readFile(path.join(this.config.vaultPath, cleanRel), 'utf-8'));
         } catch {
           /* skipped: deleted or unreadable during the scan */
         }
@@ -303,6 +311,7 @@ export class GitVaultManager implements VaultManager {
    * for user-facing note edits.
    */
   async writeFileLazy(relativePath: string, content: string): Promise<void> {
+    relativePath = toVaultRelativePath(relativePath);
     this.lazyPending.set(relativePath, stripEmDash(relativePath, content));
     if (this.lazyPending.size >= GitVaultManager.LAZY_MAX_PENDING) {
       await this.flushLazy();
@@ -361,6 +370,7 @@ export class GitVaultManager implements VaultManager {
    * Automatically commits and pushes the change
    */
   async writeFile(relativePath: string, content: string): Promise<void> {
+    relativePath = toVaultRelativePath(relativePath);
     return this.runExclusive(async () => {
       await this.initialize();
       const fullPath = path.join(this.config.vaultPath, relativePath);
@@ -384,6 +394,7 @@ export class GitVaultManager implements VaultManager {
    * Automatically commits and pushes the change
    */
   async deleteFile(relativePath: string): Promise<void> {
+    relativePath = toVaultRelativePath(relativePath);
     return this.runExclusive(async () => {
       await this.initialize();
       const fullPath = path.join(this.config.vaultPath, relativePath);
@@ -411,6 +422,8 @@ export class GitVaultManager implements VaultManager {
    * Automatically commits and pushes the change
    */
   async moveFile(sourcePath: string, destPath: string): Promise<void> {
+    sourcePath = toVaultRelativePath(sourcePath);
+    destPath = toVaultRelativePath(destPath);
     return this.runExclusive(async () => {
       await this.initialize();
       const fullSourcePath = path.join(this.config.vaultPath, sourcePath);
@@ -428,6 +441,7 @@ export class GitVaultManager implements VaultManager {
    * Create a directory
    */
   async createDirectory(relativePath: string, recursive: boolean): Promise<void> {
+    relativePath = toVaultRelativePath(relativePath);
     return this.runExclusive(async () => {
       await this.initialize();
       const fullPath = path.join(this.config.vaultPath, relativePath);
@@ -446,6 +460,7 @@ export class GitVaultManager implements VaultManager {
       recursive?: boolean;
     } = {},
   ): Promise<string[]> {
+    if (relativePath) relativePath = toVaultRelativePath(relativePath);
     return this.runExclusive(async () => {
       await this.initialize();
       const fullPath = path.join(this.config.vaultPath, relativePath);
@@ -505,6 +520,7 @@ export class GitVaultManager implements VaultManager {
    * Check if a file exists
    */
   async fileExists(relativePath: string): Promise<boolean> {
+    relativePath = toVaultRelativePath(relativePath);
     return this.runExclusive(async () => {
       await this.initialize();
       const fullPath = path.join(this.config.vaultPath, relativePath);
