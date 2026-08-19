@@ -149,6 +149,13 @@ function capturePage(token: string): string {
   .ok { color: #4ade80; } .ko { color: #f87171; }
   #fl { display: block; margin: 0 0 8px; color: #7d8896; font-size: 14px; }
   #f { padding: 12px; margin-bottom: 16px; font-size: 15px; }
+  /* Pastilles de mode : le prefixe se choisit du pouce au lieu de se taper. */
+  #modes { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .m { flex: 1 1 auto; min-width: 88px; border: 1px solid #26313d; background: #131a22;
+    color: #9aa6b3; border-radius: 999px; padding: 12px 10px; font: 600 15px/1 inherit;
+    -webkit-tap-highlight-color: transparent; }
+  .m:active { background: #1b242e; }
+  .m.on { background: #1d4ed8; border-color: #1d4ed8; color: #fff; }
 </style>
 </head>
 <body>
@@ -160,6 +167,13 @@ function capturePage(token: string): string {
   <label id="fl" for="f">Joindre un fichier (photo, PDF, doc)</label>
   <input id="f" type="file">
   <button id="b">Dans le cerveau</button>
+  <p class="sub" style="margin:14px 0 8px">Ou envoie directement comme :</p>
+  <div id="modes">
+    <button type="button" class="m" data-p="fais: ">Fais ça</button>
+    <button type="button" class="m" data-p="todo: ">A faire</button>
+    <button type="button" class="m" data-p="pk: ">Pourquoi</button>
+    <button type="button" class="m" data-p="probleme: ">Probleme</button>
+  </div>
   <div id="s"></div>
 </main>
 <script>
@@ -170,10 +184,15 @@ function capturePage(token: string): string {
   var pf = new URLSearchParams(location.search).get('prefill');
   if (pf) { t.value = pf; t.setSelectionRange(pf.length, pf.length); setTimeout(function () { t.focus(); }, 80); }
   var f = document.getElementById('f');
-  b.onclick = function () {
-    var text = t.value.trim(), url = u.value.trim();
+  // Envoi. Le prefixe vient d'un bouton d'action (Fais ca, A faire, Pourquoi,
+  // Probleme) : une seule pression dicte le sort de la capture, sans que Darius
+  // ait a taper le mot-cle ni a toucher au curseur (demande du 2026-08-19).
+  function envoyer(prefixe) {
+    var brut = t.value.trim(), url = u.value.trim();
     var file = f.files && f.files[0];
-    if (!text && !url && !file) { s.className = 'ko'; s.textContent = 'Ecris quelque chose ou joins un fichier.'; return; }
+    if (!brut && !url && !file) { s.className = 'ko'; s.textContent = 'Ecris quelque chose ou joins un fichier.'; return; }
+    if (prefixe && !brut) { s.className = 'ko'; s.textContent = 'Dis d abord quoi faire.'; return; }
+    var text = prefixe ? prefixe + brut : brut;
     b.disabled = true; s.className = ''; s.textContent = file ? 'Envoi du fichier...' : 'Envoi...';
     // Un fichier part en octets bruts vers /capture/file : il va au bucket et
     // l'inbox n'en garde que la cle, que le worker documents convertira.
@@ -186,15 +205,22 @@ function capturePage(token: string): string {
       : fetch('/capture', { method: 'POST',
           headers: { 'content-type': 'application/json', 'x-capture-token': TOKEN },
           body: JSON.stringify({ text: text, url: url }) });
+    var LABELS = { 'fais: ': 'Tache lancee', 'todo: ': 'Ajoute a ta liste',
+                   'pk: ': 'Question posee', 'probleme: ': 'Probleme consigne' };
     envoi.then(function (r) { return r.json(); }).then(function (j) {
       if (j && j.ok) {
         s.className = 'ok';
-        s.textContent = file ? 'Fichier dans le cerveau' : 'Capture OK';
+        s.textContent = file ? 'Fichier dans le cerveau' : (LABELS[prefixe] || 'Capture OK');
         t.value = ''; u.value = ''; f.value = '';
       } else { s.className = 'ko'; s.textContent = 'Refus : ' + ((j && j.error) || 'erreur'); }
       b.disabled = false;
     }).catch(function () { s.className = 'ko'; s.textContent = 'Echec reseau'; b.disabled = false; });
-  };
+  }
+  b.onclick = function () { envoyer(''); };
+  var boutons = document.querySelectorAll('.m');
+  for (var i = 0; i < boutons.length; i++) {
+    boutons[i].onclick = function () { envoyer(this.getAttribute('data-p')); };
+  }
 </script>
 </body>
 </html>`;
