@@ -309,7 +309,10 @@ if (ragService && CERVEAU_API_TOKEN) {
 
 // Frictionless capture inbox (POST /capture): phone Share button / bookmarklet
 // drops an idea or URL into 01-raw/inbox, the daily agent distills it later.
-registerCaptureRoute(app, vaultManager);
+// With a bucket, POST /capture/file accepts an attachment too (photo, PDF, doc):
+// the bytes go to the bucket, the inbox keeps only the key, and the PC2 documents
+// worker converts it to markdown with markitdown (demande Darius 2026-08-19).
+registerCaptureRoute(app, vaultManager, bucketStore ?? undefined);
 
 // One-tap validate / refuse (GET /valide, /rejette, /approuve, /revue, /prop):
 // the notif buttons flip a task's statut; /revue triages the 08-auto proposals.

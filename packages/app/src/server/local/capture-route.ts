@@ -1,5 +1,7 @@
+import express from 'express';
 import type { Express, Request, Response } from 'express';
 import type { VaultManager } from '@/services/vault-manager';
+import type { BucketStore } from '@/services/storage/bucket-store';
 import { recordAnswer, consumeAnswer, markAnswered } from '@/services/relance/relance-sweep';
 import { logger } from '@/utils/logger';
 
@@ -22,6 +24,15 @@ function escapeText(text: string): string {
 const INBOX_DIR = '01-raw/inbox';
 const TACHES_DIR = '09-taches';
 const AUTO_DIR = '08-auto';
+/**
+ * Pieces jointes capturees depuis le telephone (demande Darius 2026-08-19 : la
+ * capture ne prenait que du texte et des liens, donc une photo de contrat ou un
+ * PDF ne pouvait pas entrer). Le binaire va au BUCKET, hors git ; l'inbox n'en
+ * garde que la cle. Le worker documents de PC2 le convertit ensuite en markdown
+ * avec markitdown, localement, sans depenser un seul token.
+ */
+const FICHIERS_PREFIX = '01-raw/fichiers';
+const MAX_FICHIER = 25 * 1024 * 1024;
 
 const CORS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
@@ -136,6 +147,8 @@ function capturePage(token: string): string {
   button:disabled { opacity: .5; }
   #s { text-align: center; margin-top: 16px; min-height: 24px; font-size: 15px; }
   .ok { color: #4ade80; } .ko { color: #f87171; }
+  #fl { display: block; margin: 0 0 8px; color: #7d8896; font-size: 14px; }
+  #f { padding: 12px; margin-bottom: 16px; font-size: 15px; }
 </style>
 </head>
 <body>
@@ -144,6 +157,8 @@ function capturePage(token: string): string {
   <p class="sub">Ecris ou dicte (micro du clavier). Un bouton, c'est dans le cerveau.</p>
   <textarea id="t" placeholder="Ton idee..." autofocus></textarea>
   <input id="u" type="url" inputmode="url" placeholder="Lien (optionnel)">
+  <label id="fl" for="f">Joindre un fichier (photo, PDF, doc)</label>
+  <input id="f" type="file">
   <button id="b">Dans le cerveau</button>
   <div id="s"></div>
 </main>
@@ -154,16 +169,29 @@ function capturePage(token: string): string {
   // Pre-fill (e.g. "pk: " from a "Répondre" button) so answering is one dictation.
   var pf = new URLSearchParams(location.search).get('prefill');
   if (pf) { t.value = pf; t.setSelectionRange(pf.length, pf.length); setTimeout(function () { t.focus(); }, 80); }
+  var f = document.getElementById('f');
   b.onclick = function () {
     var text = t.value.trim(), url = u.value.trim();
-    if (!text && !url) { s.className = 'ko'; s.textContent = 'Ecris quelque chose.'; return; }
-    b.disabled = true; s.className = ''; s.textContent = 'Envoi...';
-    fetch('/capture', { method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-capture-token': TOKEN },
-      body: JSON.stringify({ text: text, url: url })
-    }).then(function (r) { return r.json(); }).then(function (j) {
-      if (j && j.ok) { s.className = 'ok'; s.textContent = 'Capture OK'; t.value = ''; u.value = ''; }
-      else { s.className = 'ko'; s.textContent = 'Refus : ' + ((j && j.error) || 'erreur'); }
+    var file = f.files && f.files[0];
+    if (!text && !url && !file) { s.className = 'ko'; s.textContent = 'Ecris quelque chose ou joins un fichier.'; return; }
+    b.disabled = true; s.className = ''; s.textContent = file ? 'Envoi du fichier...' : 'Envoi...';
+    // Un fichier part en octets bruts vers /capture/file : il va au bucket et
+    // l'inbox n'en garde que la cle, que le worker documents convertira.
+    var envoi = file
+      ? fetch('/capture/file?k=' + encodeURIComponent(TOKEN)
+              + '&name=' + encodeURIComponent(file.name)
+              + '&type=' + encodeURIComponent(file.type || 'application/octet-stream')
+              + '&note=' + encodeURIComponent(text),
+          { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: file })
+      : fetch('/capture', { method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-capture-token': TOKEN },
+          body: JSON.stringify({ text: text, url: url }) });
+    envoi.then(function (r) { return r.json(); }).then(function (j) {
+      if (j && j.ok) {
+        s.className = 'ok';
+        s.textContent = file ? 'Fichier dans le cerveau' : 'Capture OK';
+        t.value = ''; u.value = ''; f.value = '';
+      } else { s.className = 'ko'; s.textContent = 'Refus : ' + ((j && j.error) || 'erreur'); }
       b.disabled = false;
     }).catch(function () { s.className = 'ko'; s.textContent = 'Echec reseau'; b.disabled = false; });
   };
@@ -172,11 +200,67 @@ function capturePage(token: string): string {
 </html>`;
 }
 
-export function registerCaptureRoute(app: Express, vault: VaultManager): boolean {
+export function registerCaptureRoute(
+  app: Express,
+  vault: VaultManager,
+  bucket?: BucketStore,
+): boolean {
   const token = process.env.CAPTURE_TOKEN;
   if (!token) {
     logger.info('CAPTURE_TOKEN not set — POST /capture disabled');
     return false;
+  }
+
+  /**
+   * Piece jointe capturee depuis le telephone. Les octets vont au bucket (hors
+   * git : un vault ne doit pas grossir de binaires), et l'inbox recoit une
+   * ligne `fichier: <cle> | <nom>` que le worker documents de PC2 convertit en
+   * markdown avec markitdown, localement. Sans bucket configure, la route
+   * repond proprement au lieu d'exister a moitie.
+   */
+  if (bucket) {
+    app.post(
+      '/capture/file',
+      express.raw({ type: '*/*', limit: MAX_FICHIER }),
+      async (req: Request, res: Response) => {
+        res.set(CORS);
+        if ((req.query.k as string | undefined) !== token) {
+          res.status(401).json({ error: 'invalid token' });
+          return;
+        }
+        const body = req.body as Buffer;
+        if (!Buffer.isBuffer(body) || body.length === 0) {
+          res.status(400).json({ error: 'empty file' });
+          return;
+        }
+        const nom = clean(req.query.name) || 'fichier';
+        const type = clean(req.query.type) || 'application/octet-stream';
+        const note = clean(req.query.note);
+        const ext = (nom.match(/\.([A-Za-z0-9]{1,8})$/) || [, ''])[1].toLowerCase();
+        const base = slugify(nom.replace(/\.[A-Za-z0-9]{1,8}$/, ''), 50) || 'fichier';
+        const key = `${FICHIERS_PREFIX}/${day()}-${hm().replace(':', '')}-${base}${ext ? '.' + ext : ''}`;
+        try {
+          await bucket.put(key, body, type);
+          const file = `${INBOX_DIR}/${day()}.md`;
+          await vault.createDirectory(INBOX_DIR, true);
+          const avant = (await vault.fileExists(file))
+            ? await vault.readFile(file)
+            : inboxHeader(day());
+          const ligne =
+            `- ${hm()} · fichier: \`${key}\` | ${nom} (${Math.round(body.length / 1024)} Ko)` +
+            (note ? ` · ${note}` : '');
+          await vault.writeFile(file, `${avant.replace(/\s*$/, '')}\n${ligne}\n`);
+          logger.info('Capture fichier stored', { key, bytes: body.length });
+          res.status(200).json({ ok: true, key, bytes: body.length });
+        } catch (error) {
+          logger.error('Capture fichier failed', { error: String(error) });
+          res.status(500).json({ error: 'upload failed' });
+        }
+      },
+    );
+    app.options('/capture/file', (_req: Request, res: Response) => {
+      res.set(CORS).status(204).end();
+    });
   }
 
   // The home-screen capture app. Gated by the token in the URL (?k=TOKEN).
