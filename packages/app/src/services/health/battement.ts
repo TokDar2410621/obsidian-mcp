@@ -115,6 +115,13 @@ const CRONS: Array<{
     dormantSiOff: 'MAINTENANCE_ENABLED',
   },
   { nom: 'poussoir', label: 'Poussoir', cadenceH: 30, dormantSiOff: 'POUSSOIR' },
+  {
+    nom: 'retours',
+    label: 'Retours du monde',
+    cadenceH: 30,
+    dormantSans: ['PUBLIAR_API_KEY'],
+    dormantSiOff: 'RETOURS',
+  },
 ];
 
 /** Components that exist but leave no watchable trace yet. Listed in the

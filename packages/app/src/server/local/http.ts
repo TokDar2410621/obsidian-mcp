@@ -58,6 +58,8 @@ import { pouls } from '@/services/health/pouls';
 import { BattementDeCoeur } from '@/services/health/battement';
 import { scheduleBattement } from '@/services/health/battement-cron';
 import { PoussoirService } from '@/services/poussoir/poussoir';
+import { RetoursService } from '@/services/retours/retours';
+import { scheduleRetours } from '@/services/retours/retours-cron';
 import { schedulePoussoir } from '@/services/poussoir/poussoir-cron';
 import { createMemoryStrength } from '@/services/memory/memory-strength';
 import { createConclusionsRegistry } from '@/services/conclusions/conclusions-registry';
@@ -258,6 +260,14 @@ const battement = new BattementDeCoeur({
   notify: notifier,
   telemetry: telemetrySnapshot,
   poulsSnapshot: () => pouls.instantane(),
+});
+
+// Retours du monde (the afferent nerve): one daily pass that polls the
+// tracked LinkedIn posts so CTA comments become visible engagements instead
+// of counters nobody ever reads (15 posts, last_polled_at null on every one).
+const retoursService = new RetoursService({
+  vault: vaultManager,
+  notify: notifier,
 });
 
 // Poussoir (the daily push to ACT): one fully-prepared visibility gesture a
@@ -480,6 +490,7 @@ Configure ChatGPT/Claude with:
       }
     });
   schedulePoussoir(poussoirService);
+  scheduleRetours(retoursService);
 
   scheduleStripeProbe(stripeProbe);
   stripeProbe
