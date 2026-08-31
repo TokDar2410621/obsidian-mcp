@@ -20,6 +20,7 @@ const STATE_FILE = `${AUTO_DIR}/_brief-state.json`;
 const RECORD_FILE = `${AUTO_DIR}/_brief-matin.md`;
 const PRIORITIES_FILE = `${AUTO_DIR}/_priorities.md`;
 const QUESTION_FILE = `${AUTO_DIR}/_question.md`;
+const RETOURS_STATE_FILE = `${AUTO_DIR}/_retours-state.json`;
 /** Fallback heartbeats written by the PC2 workers. HTTP telemetry is finer. */
 const HEARTBEAT_DIR = `${AUTO_DIR}/_veille-workers`;
 const LEGACY_HEARTBEAT_FILE = `${AUTO_DIR}/_veille-workers.json`;
@@ -319,9 +320,31 @@ export class MorningBriefService {
       /* watchdog must never break the brief */
     }
 
-    const lines = [questionLine, insightLine, ...watchdogLines, deadlineLine, priorityLine].filter(
-      Boolean,
-    ) as string[];
+    // Retours du monde: comments carrying a CTA keyword that still await their
+    // DM. A reply is the rarest signal this system knows; the brief must
+    // surface it ABOVE fresh production, or the loop stays write-only.
+    let retoursLine: string | null = null;
+    try {
+      const brut = JSON.parse(await vault.readFile(RETOURS_STATE_FILE)) as {
+        posts?: Record<string, { matched?: number; sent?: number; keyword?: string }>;
+      };
+      const posts = Object.values(brut.posts ?? {});
+      const attente = posts.reduce((n, p) => n + Math.max(0, (p.matched ?? 0) - (p.sent ?? 0)), 0);
+      if (attente > 0) {
+        retoursLine = `🌍 ${attente} commentaire(s) à mot-clé attendent leur DM (08-auto/_retours.md)`;
+      }
+    } catch {
+      /* pas encore de passe retours : aucune ligne */
+    }
+
+    const lines = [
+      retoursLine,
+      questionLine,
+      insightLine,
+      ...watchdogLines,
+      deadlineLine,
+      priorityLine,
+    ].filter(Boolean) as string[];
     if (pendingTotal > 0) lines.push(`En attente de toi : ${pendingParts.join(', ')} (08-auto)`);
 
     // Output loop: finished deliverables and pending resolutions never wait in
