@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { configureLogger } from '@/utils/logger';
 import { InMemoryVaultManager } from '@tests/support/doubles/in-memory-vault-manager.js';
+
+configureLogger({ stream: process.stderr, minLevel: 'error' });
 import { RagService } from '@/services/rag/rag-service';
 import { GraphService } from '@/services/graph/graph-service';
 import { KnowledgeGraph } from '@/services/graph/knowledge-graph';
-import { parseExtraction } from '@/services/graph/graph-llm';
+import { parseExtraction, stripLoneSurrogates } from '@/services/graph/graph-llm';
 import type { EmbeddingProvider, VaultReader } from '@/services/rag/types';
 import type { GraphExtraction, GraphLlm } from '@/services/graph/types';
 
@@ -209,6 +212,65 @@ describe('GraphRAG — self-healing of empty extractions', () => {
     const calls = llm.extractCalls;
     await graph.build();
     expect(llm.extractCalls).toBe(calls); // cached empty, no retry
+  });
+});
+
+describe('GraphRAG — une note ne coule pas le build entier', () => {
+  const VAULT = {
+    'a.md': '# A\n\nRedis powers SendMeNow',
+    'b.md': '# B\n\nStripe and Redis',
+    'c.md': '# C\n\nRedis and Stripe again',
+  };
+
+  /** Reproduit la panne vecue du 2026-08-18 : une note fait repondre 400 a l'API. */
+  class ThrowsOnOneNote extends FakeGraphLlm {
+    async extract(text: string): Promise<GraphExtraction> {
+      if (text.includes('Stripe and Redis')) {
+        this.extractCalls++;
+        throw new Error('400 invalid high surrogate in string');
+      }
+      return super.extract(text);
+    }
+  }
+
+  it('garde les extractions deja payees quand une note jette', async () => {
+    const rag = await buildRag(VAULT);
+    const llm = new ThrowsOnOneNote();
+    const graph = new GraphService({ rag, llm, graphFile: '/unused', persist: false });
+
+    // Avant ce correctif, l'exception remontait hors de doBuild : ni le cache
+    // ni le graphe n'etaient poses, et tout le travail deja facture etait jete.
+    const r = await graph.build();
+    expect(r.entities).toBeGreaterThan(0); // le travail des notes saines survit
+  });
+
+  it('ne re-extrait pas les notes saines au build suivant', async () => {
+    const rag = await buildRag(VAULT);
+    const llm = new ThrowsOnOneNote();
+    const graph = new GraphService({ rag, llm, graphFile: '/unused', persist: false });
+
+    await graph.build();
+    const apresPremier = llm.extractCalls;
+    await graph.build();
+    // Le cache des saines a bien ete pose : le second build coute moins cher.
+    expect(llm.extractCalls - apresPremier).toBeLessThan(apresPremier);
+  });
+});
+
+describe('GraphRAG — surrogates orphelins', () => {
+  it('retire la moitie de paire laissee par le decoupage en fenetres', () => {
+    const emoji = '\u{1F600}';
+    const moitie = emoji.slice(0, 1); // high surrogate seul, ce que windowText produit
+    expect(stripLoneSurrogates(`avant ${moitie} apres`)).toBe('avant  apres');
+    expect(stripLoneSurrogates(`ok ${emoji} ok`)).toBe(`ok ${emoji} ok`); // paire intacte
+  });
+
+  it('neutralise le faux gras LinkedIn coupe en deux (le poison reel)', () => {
+    const gras = '\u{1D5F2}'; // MATHEMATICAL SANS-SERIF BOLD SMALL E
+    const coupe = gras.slice(0, 1);
+    const nettoye = stripLoneSurrogates(`texte${coupe}suite`);
+    expect(nettoye).toBe('textesuite');
+    expect(nettoye).not.toMatch(/[\uD800-\uDFFF]/);
   });
 });
 
