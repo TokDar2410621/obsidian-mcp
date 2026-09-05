@@ -7,6 +7,7 @@ import type { GraphEdgeView } from '@/services/graph/knowledge-graph';
 import type { GraphExtraction, GraphLlm } from '@/services/graph/types';
 import type { RagService } from '@/services/rag/rag-service';
 import type { ToolResponse } from '@/mcp/handlers/types';
+import { logger } from '@/utils/logger';
 
 const GRAPH_VERSION = 1;
 const DEFAULT_DEPTH = 2;
@@ -93,6 +94,7 @@ export class GraphService {
 
     let extracted = 0;
     let healed = 0;
+    let failed = 0;
     const nextCache = new Map<string, CachedExtraction>();
     for (const [file, text] of notes) {
       const hash = sha256(text);
@@ -112,7 +114,27 @@ export class GraphService {
       if (cached && cached.hash === hash && !retryThisBuild) {
         nextCache.set(file, cached);
       } else {
-        let extraction = await this.llm.extract(text);
+        // One note must never sink the whole build. Before this guard a single
+        // throw here (an API 400 on a malformed note, a rate limit, a timeout)
+        // propagated out of doBuild, so `this.cache = nextCache` and `save()`
+        // below were never reached: every extraction already paid for in this
+        // pass was discarded, and the next build restarted from the same
+        // stale cache. Lived from 2026-08-18 to 2026-09-01, on every push,
+        // roughly a hundred times a day, for nothing.
+        let extraction: GraphExtraction;
+        try {
+          extraction = await this.llm.extract(text);
+        } catch (err) {
+          failed++;
+          logger.warn('Graph extraction failed, keeping the previous one', {
+            file,
+            error: String((err as Error)?.message ?? err),
+          });
+          // Keep what we knew (stale beats blind) and do NOT touch emptyRetries:
+          // a transport failure is not evidence that the note is empty.
+          if (cached) nextCache.set(file, cached);
+          continue;
+        }
         // Never overwrite a good extraction with an empty one: an LLM hiccup
         // on a CHANGED note must degrade to the previous knowledge (slightly
         // stale beats blind), not blank the note out of the graph.
@@ -127,6 +149,7 @@ export class GraphService {
       }
     }
     this.cache = nextCache;
+    if (failed > 0) logger.warn('Graph build finished with failed extractions', { failed });
 
     const g = new KnowledgeGraph();
     for (const [file, c] of this.cache) g.addNote(file, c.extraction);

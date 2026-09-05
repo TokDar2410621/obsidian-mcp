@@ -1,5 +1,28 @@
 import type { GraphExtraction, GraphLlm, Relation } from '@/services/graph/types';
 import type { LlmCompleter } from '@/services/synapses/types';
+import { logger } from '@/utils/logger';
+
+/**
+ * Drop unpaired UTF-16 surrogates.
+ *
+ * The chunker windows text at a fixed number of UTF-16 units (`chunker.ts`,
+ * `windowText`), so a cut can land in the middle of a surrogate pair;
+ * `noteTexts()` then rejoins the pieces with a newline and the pair never
+ * reforms. `JSON.stringify` in the provider SDK turns that lone half into an
+ * invalid request body, and the API answers `400 invalid high surrogate in
+ * string`.
+ *
+ * Real case (2026-08-18 to 2026-09-01): LinkedIn pseudo-bold letters
+ * (MATHEMATICAL SANS-SERIF BOLD, U+1D5xx) pasted into two raw transcripts froze
+ * every graph build at note 128 of 1933 for two weeks, and every build threw
+ * away the 127 extractions it had already paid for.
+ */
+export function stripLoneSurrogates(text: string): string {
+  return text.replace(
+    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g,
+    '',
+  );
+}
 
 const EXTRACT_SYSTEM = [
   'Tu extrais un graphe de connaissances depuis une note Markdown (projets, savoir, personnes).',
@@ -19,8 +42,21 @@ export class LlmGraph implements GraphLlm {
   constructor(private readonly llm: LlmCompleter) {}
 
   async extract(noteText: string): Promise<GraphExtraction> {
-    const text = await this.llm.complete(EXTRACT_SYSTEM, noteText.slice(0, 6000), 1024);
-    return parseExtraction(text);
+    const input = stripLoneSurrogates(noteText.slice(0, 6000));
+    const text = await this.llm.complete(EXTRACT_SYSTEM, input, 1024);
+    const extraction = parseExtraction(text);
+    // An empty extraction used to be indistinguishable from "the note says
+    // nothing": nothing was logged anywhere, so 688 blind notes out of 803 went
+    // unnoticed for weeks. Leave a trace carrying enough of the raw answer to
+    // tell a truncation from an unreadable format.
+    if (extraction.entities.length === 0 && input.length >= 300) {
+      logger.warn('Graph extraction came back empty', {
+        chars: input.length,
+        answerChars: text.length,
+        answerHead: text.slice(0, 200),
+      });
+    }
+    return extraction;
   }
 
   async synthesize(question: string, context: string): Promise<string> {
