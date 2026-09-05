@@ -358,3 +358,138 @@ describe('GraphRAG — reponses tronquees', () => {
     expect(r.relations).toHaveLength(1);
   });
 });
+
+describe('GraphRAG — removeNote (batissage differentiel)', () => {
+  const extraction = (entities: string[], relations: Array<[string, string, string]> = []) => ({
+    entities,
+    relations: relations.map(([source, relation, target]) => ({ source, relation, target })),
+  });
+
+  it('retire les noeuds orphelins mais garde les entites encore citees ailleurs', () => {
+    const g = new KnowledgeGraph();
+    g.addNote('a.md', extraction(['Redis', 'SendMeNow'], [['Redis', 'sert', 'SendMeNow']]));
+    g.addNote('b.md', extraction(['Redis', 'Stripe'], [['Redis', 'facture via', 'Stripe']]));
+
+    g.removeNote('a.md');
+
+    // SendMeNow n'etait cite que par a.md : il disparait, avec son arete.
+    expect(g.matchEntities('SendMeNow')).toHaveLength(0);
+    // Redis est encore cite par b.md : il survit.
+    expect(g.matchEntities('Redis')).toHaveLength(1);
+    expect(g.size.relations).toBe(1); // seule l'arete de b.md reste
+  });
+
+  it('nettoie l adjacence : aucune traversee vers un voisin fantome', () => {
+    const g = new KnowledgeGraph();
+    g.addNote('a.md', extraction(['Redis', 'SendMeNow'], [['Redis', 'sert', 'SendMeNow']]));
+    g.addNote('b.md', extraction(['Redis', 'Stripe'], [['Redis', 'facture via', 'Stripe']]));
+
+    g.removeNote('a.md');
+
+    const seeds = g.matchEntities('Redis');
+    const atteints = g.expand(seeds, 2);
+    const noms = [...atteints].map(k => g.nodeName(k).toLowerCase());
+    expect(noms).toContain('stripe');
+    expect(noms).not.toContain('sendmenow'); // le voisin fantome, avant le correctif d'adjacence
+  });
+
+  it('une arete partagee par deux notes survit au retrait d une seule', () => {
+    const g = new KnowledgeGraph();
+    g.addNote('a.md', extraction(['Redis', 'Stripe'], [['Redis', 'facture via', 'Stripe']]));
+    g.addNote('b.md', extraction(['Redis', 'Stripe'], [['Redis', 'facture via', 'Stripe']]));
+
+    g.removeNote('a.md');
+    expect(g.size.relations).toBe(1);
+    g.removeNote('b.md');
+    expect(g.size).toEqual({ entities: 0, relations: 0 }); // plus rien, pas de residu
+  });
+
+  it('retirer puis re-ajouter est le cycle d une mise a jour', () => {
+    const g = new KnowledgeGraph();
+    g.addNote('a.md', extraction(['Redis']));
+    g.removeNote('a.md');
+    g.addNote('a.md', extraction(['Stripe']));
+    expect(g.matchEntities('Redis')).toHaveLength(0);
+    expect(g.matchEntities('Stripe')).toHaveLength(1);
+  });
+});
+
+describe('GraphRAG — applyChanges (le delta au lieu du balayage)', () => {
+  function buildRagMutable(files: Record<string, string>): {
+    vault: InMemoryVaultManager;
+    rag: RagService;
+  } {
+    const vault = new InMemoryVaultManager(files);
+    const rag = new RagService({
+      reader: makeReader(vault),
+      embedder: new FakeEmbedder(),
+      generator: null,
+      indexFile: '/unused',
+      persist: false,
+    });
+    return { vault, rag };
+  }
+
+  const VAULT = {
+    'a.md': '# A\n\nRedis powers SendMeNow',
+    'b.md': '# B\n\nStripe and Redis',
+    'c.md': '# C\n\nRedis everywhere',
+  };
+
+  it('une note changee = une seule extraction, les autres zero', async () => {
+    const { vault, rag } = buildRagMutable({ ...VAULT });
+    await rag.ensureReady();
+    const llm = new FakeGraphLlm();
+    const graph = new GraphService({ rag, llm, graphFile: '/unused', persist: false });
+    await graph.build();
+    const apresBuild = llm.extractCalls;
+
+    await vault.writeFile('a.md', '# A\n\nRedis now also powers Stripe');
+    await rag.refresh();
+    const r = await graph.applyChanges(['a.md']);
+
+    expect(r.updated).toBe(1);
+    expect(r.extracted).toBe(1);
+    expect(llm.extractCalls - apresBuild).toBe(1); // b.md et c.md : zero appel
+  });
+
+  it('une note inchangee annoncee changee ne coute rien (garde de hash)', async () => {
+    const { rag } = buildRagMutable({ ...VAULT });
+    await rag.ensureReady();
+    const llm = new FakeGraphLlm();
+    const graph = new GraphService({ rag, llm, graphFile: '/unused', persist: false });
+    await graph.build();
+    const apresBuild = llm.extractCalls;
+
+    const r = await graph.applyChanges(['a.md', 'b.md', 'c.md']);
+    expect(r.extracted).toBe(0);
+    expect(llm.extractCalls).toBe(apresBuild);
+  });
+
+  it('une note supprimee sort du graphe, sans appel LLM', async () => {
+    const { vault, rag } = buildRagMutable({ ...VAULT });
+    await rag.ensureReady();
+    const llm = new FakeGraphLlm();
+    const graph = new GraphService({ rag, llm, graphFile: '/unused', persist: false });
+    const avant = await graph.build();
+    const apresBuild = llm.extractCalls;
+
+    await vault.deleteFile('a.md');
+    await rag.refresh();
+    const r = await graph.applyChanges([], ['a.md']);
+
+    expect(r.removed).toBe(1);
+    expect(llm.extractCalls).toBe(apresBuild); // zero appel pour une suppression
+    expect(r.entities).toBeLessThanOrEqual(avant.entities);
+  });
+
+  it('avant tout build, le delta declenche le build complet une seule fois', async () => {
+    const { rag } = buildRagMutable({ ...VAULT });
+    await rag.ensureReady();
+    const llm = new FakeGraphLlm();
+    const graph = new GraphService({ rag, llm, graphFile: '/unused', persist: false });
+
+    const r = await graph.applyChanges(['a.md']);
+    expect(r.entities).toBeGreaterThan(0); // le graphe existe desormais
+  });
+});

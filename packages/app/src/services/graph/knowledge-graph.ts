@@ -73,6 +73,49 @@ export class KnowledgeGraph {
     }
   }
 
+  /**
+   * Retire la contribution d'UNE note du graphe, sans rien reconstruire.
+   *
+   * C'est la piece qui rend le batissage differentiel possible : chaque noeud
+   * porte `mentions` (les notes qui le citent) et chaque arete porte `notes`,
+   * donc on sait exactement ce que ce fichier a apporte. L'ordre est choisi
+   * pour interdire la derive :
+   *   1. retirer le fichier de toutes les aretes, balayer celles devenues
+   *      orphelines (plus aucune note ne les soutient) ;
+   *   2. retirer le fichier de toutes les mentions, balayer les noeuds devenus
+   *      orphelins. Un invariant du modele garantit la coherence : `addNote`
+   *      ajoute le fichier aux DEUX extremites d'une arete en meme temps qu'a
+   *      l'arete, donc un noeud sans mention ne peut pas soutenir une arete
+   *      encore vivante ;
+   *   3. rebatir l'adjacence depuis les aretes survivantes. O(aretes), pur
+   *      memoire, et structurellement incapable de laisser un voisin fantome,
+   *      la ou une retouche chirurgicale pourrait en oublier un.
+   */
+  removeNote(file: string): void {
+    for (const [ek, edge] of this.edges) {
+      edge.notes.delete(file);
+      if (edge.notes.size === 0) this.edges.delete(ek);
+    }
+    for (const [k, node] of this.nodes) {
+      node.mentions.delete(file);
+      if (node.mentions.size === 0) {
+        this.nodes.delete(k);
+        this.adjacency.delete(k);
+      }
+    }
+    this.rebuildAdjacency();
+  }
+
+  private rebuildAdjacency(): void {
+    for (const set of this.adjacency.values()) set.clear();
+    for (const edge of this.edges.values()) {
+      const sk = key(edge.source);
+      const tk = key(edge.target);
+      this.adjacency.get(sk)?.add(tk);
+      this.adjacency.get(tk)?.add(sk);
+    }
+  }
+
   private touch(name: string, file: string): void {
     const k = key(name);
     let node = this.nodes.get(k);

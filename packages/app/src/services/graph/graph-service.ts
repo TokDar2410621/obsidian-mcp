@@ -47,6 +47,16 @@ export interface GraphBuildResult {
   extracted: number;
   entities: number;
   relations: number;
+  /** Present quand la reconstruction a franchi le seuil de re-extraction massive. */
+  alarm?: boolean;
+}
+
+export interface GraphDeltaResult {
+  updated: number;
+  removed: number;
+  extracted: number;
+  entities: number;
+  relations: number;
 }
 
 /**
@@ -66,6 +76,14 @@ export class GraphService {
   private graph = new KnowledgeGraph();
   private loaded = false;
   private buildPromise: Promise<GraphBuildResult> | null = null;
+  /** File des mises a jour differentielles : jamais deux en vol. */
+  private updateQueue: Promise<GraphDeltaResult> = Promise.resolve({
+    updated: 0,
+    removed: 0,
+    extracted: 0,
+    entities: 0,
+    relations: 0,
+  });
 
   constructor(o: GraphServiceOptions) {
     this.rag = o.rag;
@@ -91,6 +109,33 @@ export class GraphService {
     if (this.persist && this.cache.size === 0) await this.tryLoad();
     await this.rag.ensureReady();
     const notes = this.noteTexts();
+
+    // L'alarme de cache perdu : CRIER AVANT de depenser, pas apres.
+    //
+    // Une reconstruction avec le cache chaud ne rappelle le LLM que pour les
+    // notes dont l'empreinte a change : quelques appels, cout nul. Le vrai
+    // danger est la perte du cache (/data corrompu, volume remplace) : le meme
+    // build repaie alors ~2400 extractions, des millions de jetons, en
+    // silence. Si le nombre de notes a extraire depasse le seuil, on le dit en
+    // ERROR avant la premiere depense. On n'interrompt pas : le premier
+    // deploiement d'une machine neuve passe legitimement par la, et la
+    // reconstruction nocturne doit pouvoir reparer. Mais la ligne est la,
+    // grepable, alertable.
+    const seuilAlarme = Number(process.env.GRAPH_REEXTRACTION_ALARME ?? 100);
+    let aExtraire = 0;
+    for (const [file, text] of notes) {
+      const cached = this.cache.get(file);
+      if (!cached || cached.hash !== sha256(text)) aExtraire++;
+    }
+    const alarme = aExtraire > seuilAlarme;
+    if (alarme) {
+      logger.error('Graph rebuild wants a MASS re-extraction — cache possibly lost', {
+        aExtraire,
+        notes: notes.size,
+        cacheEntries: this.cache.size,
+        seuil: seuilAlarme,
+      });
+    }
 
     let extracted = 0;
     let healed = 0;
@@ -157,7 +202,96 @@ export class GraphService {
     this.loaded = true;
 
     if (this.persist) await this.save();
-    return { notes: notes.size, extracted, entities: g.size.entities, relations: g.size.relations };
+    return {
+      notes: notes.size,
+      extracted,
+      entities: g.size.entities,
+      relations: g.size.relations,
+      ...(alarme ? { alarm: true } : {}),
+    };
+  }
+
+  /**
+   * Batissage DIFFERENTIEL : ne toucher que ce qui a change, jamais balayer.
+   *
+   * Le build complet reste juste, mais il reinsere 2000+ notes en memoire et
+   * repasse toutes les empreintes a chaque appel ; sur le chemin d'un push
+   * (80 a 214 par jour), c'est le mauvais outil. Ici le cout est strictement
+   * proportionnel au delta : une note changee = une extraction, une note
+   * supprimee = zero appel. La reparation des extractions vides n'a pas sa
+   * place sur ce chemin : elle appartient a la reconstruction nocturne.
+   *
+   * Serialise par une file : deux webhooks rapproches s'appliquent l'un apres
+   * l'autre, jamais entremeles. Et si un build complet est en vol, on attend
+   * sa fin plutot que de modifier le graphe sous ses pieds.
+   */
+  async applyChanges(changed: string[], removed: string[] = []): Promise<GraphDeltaResult> {
+    this.updateQueue = this.updateQueue.then(() => this.doApplyChanges(changed, removed));
+    return this.updateQueue;
+  }
+
+  private async doApplyChanges(changed: string[], removed: string[]): Promise<GraphDeltaResult> {
+    if (this.buildPromise) await this.buildPromise.catch(() => undefined);
+    // Premier reveil : le build complet (cache chaud = zero extraction) pose
+    // l'etat de depart, et couvre deja le delta puisqu'il lit tout.
+    if (!this.loaded) {
+      const g = await this.build();
+      return { updated: 0, removed: 0, extracted: g.extracted, entities: g.entities, relations: g.relations };
+    }
+    await this.rag.ensureReady();
+    const notes = this.noteTexts();
+
+    let updated = 0;
+    let extracted = 0;
+    let retire = 0;
+
+    for (const file of removed) {
+      if (!this.cache.has(file)) continue;
+      this.cache.delete(file);
+      this.graph.removeNote(file);
+      retire++;
+    }
+
+    for (const file of changed) {
+      if (isExcluded(file)) continue;
+      const text = notes.get(file);
+      if (text === undefined) {
+        // Annonce comme change mais absent de l'index : traite comme une
+        // suppression (fichier vide, renomme, ou filtre par le RAG).
+        if (this.cache.delete(file)) {
+          this.graph.removeNote(file);
+          retire++;
+        }
+        continue;
+      }
+      const hash = sha256(text);
+      const cached = this.cache.get(file);
+      if (cached && cached.hash === hash) continue; // rien de neuf, zero appel
+      let extraction: GraphExtraction;
+      try {
+        extraction = await this.llm.extract(text);
+        extracted++;
+      } catch (err) {
+        logger.warn('Graph delta extraction failed, keeping the previous one', {
+          file,
+          error: String((err as Error)?.message ?? err),
+        });
+        continue; // perime vaut mieux qu'aveugle ; la nuit reparera
+      }
+      // Meme garde que le build complet : ne jamais ecraser une bonne
+      // extraction par une vide.
+      if (extraction.entities.length === 0 && cached && cached.extraction.entities.length > 0) {
+        extraction = cached.extraction;
+      }
+      this.cache.set(file, { hash, extraction });
+      this.graph.removeNote(file);
+      this.graph.addNote(file, extraction);
+      updated++;
+    }
+
+    if ((updated > 0 || retire > 0) && this.persist) await this.save();
+    const { entities, relations } = this.graph.size;
+    return { updated, removed: retire, extracted, entities, relations };
   }
 
   /** Per-note text reconstructed from RAG chunks (avoids a second vault read). */
