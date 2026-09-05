@@ -263,7 +263,18 @@ export async function handlePatchContent(
       throw new Error(`File ${args.path} does not exist`);
     }
 
-    const currentContent = await getOrInitializeContent(vault, args.path, config);
+    const brut = await getOrInitializeContent(vault, args.path, config);
+
+    // CRLF: normalise before matching, restore before writing.
+    //
+    // Every anchor below splits on '\n'. On a CRLF file each line then keeps a
+    // trailing '\r', so `lines[0] === '---'` is false, `text_match` never finds
+    // its line, and a heading never compares equal. The frontmatter case was the
+    // worst: believing there was no frontmatter, it PREPENDED a second `---`
+    // block and left the note with two. 288 of 400 sampled notes in the vault
+    // are CRLF, `00-home.md` among them, so this hit the majority of the vault.
+    const crlf = brut.includes('\r\n');
+    const currentContent = crlf ? brut.replace(/\r\n/g, '\n') : brut;
 
     let patchResult: PatchResult;
 
@@ -294,7 +305,12 @@ export async function handlePatchContent(
         throw new Error(`Unknown anchor type: ${args.anchor_type}`);
     }
 
-    await vault.writeFile(args.path, patchResult.content);
+    // Give the file back the line endings it had: a note silently converted to
+    // LF would show up as a full-file diff in git on the next commit.
+    await vault.writeFile(
+      args.path,
+      crlf ? patchResult.content.replace(/\n/g, '\r\n') : patchResult.content,
+    );
 
     // Extract context lines for preview
     const allLines = patchResult.content.split('\n');

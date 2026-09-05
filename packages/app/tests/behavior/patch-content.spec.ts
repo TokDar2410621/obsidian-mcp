@@ -840,4 +840,90 @@ describe('Patch content behaviours', () => {
       expect(result.text).toContain('empty');
     });
   });
+
+  // 288 des 400 notes echantillonnees du coffre sont en CRLF, 00-home.md
+  // comprise. Chaque ancrage decoupe sur '\n' : sur CRLF chaque ligne gardait un
+  // '\r' final, donc `lines[0] === '---'` etait faux et le frontmatter se
+  // dedoublait au lieu d'etre edite.
+  describe('fins de ligne CRLF', () => {
+    const CRLF = (...l: string[]): string => l.join('\r\n');
+
+    it('edite la cle de frontmatter au lieu d ajouter un second bloc', async () => {
+      const vault = new InMemoryVaultManager({
+        'Notes/crlf.md': CRLF('---', 'statut: a-faire', 'type: tache', '---', '', '# Titre', ''),
+      });
+      harness = new ToolHarness({ vault });
+
+      const result = await harness.invoke('patch-content', {
+        path: 'Notes/crlf.md',
+        anchor_type: 'frontmatter',
+        anchor_value: 'statut',
+        position: 'replace',
+        content: 'terminee',
+      });
+
+      expect(result.success).toBe(true);
+      const updated = await harness.vault.readFile('Notes/crlf.md');
+      expect(updated).toContain('statut: terminee');
+      expect(updated).not.toContain('a-faire');
+      expect(updated.split('---').length - 1).toBe(2); // un seul bloc, pas deux
+      expect(updated).toContain('type: tache'); // le reste du frontmatter survit
+    });
+
+    it('trouve un text_match malgre les retours chariot', async () => {
+      const vault = new InMemoryVaultManager({
+        'Notes/crlf2.md': CRLF('# Titre', '', 'Ligne cible', '', 'Fin'),
+      });
+      harness = new ToolHarness({ vault });
+
+      const result = await harness.invoke('patch-content', {
+        path: 'Notes/crlf2.md',
+        anchor_type: 'text_match',
+        anchor_value: 'Ligne cible',
+        position: 'after',
+        content: 'Ajout',
+      });
+
+      expect(result.success).toBe(true);
+      expect(await harness.vault.readFile('Notes/crlf2.md')).toContain('Ajout');
+    });
+
+    it('rend au fichier ses CRLF, sinon git voit un diff complet', async () => {
+      const vault = new InMemoryVaultManager({
+        'Notes/crlf3.md': CRLF('# Titre', '', '## Cible', 'Corps', ''),
+      });
+      harness = new ToolHarness({ vault });
+
+      await harness.invoke('patch-content', {
+        path: 'Notes/crlf3.md',
+        anchor_type: 'heading',
+        anchor_value: 'Cible',
+        position: 'after',
+        content: 'Ajout',
+      });
+
+      const updated = await harness.vault.readFile('Notes/crlf3.md');
+      expect(updated).toContain('\r\n');
+      expect(updated.match(/[^\r]\n/g)).toBeNull(); // aucun LF esseule
+    });
+
+    it('laisse un fichier LF en LF', async () => {
+      const vault = new InMemoryVaultManager({
+        'Notes/lf.md': ['---', 'statut: a-faire', '---', '', '# Titre'].join('\n'),
+      });
+      harness = new ToolHarness({ vault });
+
+      await harness.invoke('patch-content', {
+        path: 'Notes/lf.md',
+        anchor_type: 'frontmatter',
+        anchor_value: 'statut',
+        position: 'replace',
+        content: 'terminee',
+      });
+
+      const updated = await harness.vault.readFile('Notes/lf.md');
+      expect(updated).toContain('statut: terminee');
+      expect(updated).not.toContain('\r');
+    });
+  });
 });
