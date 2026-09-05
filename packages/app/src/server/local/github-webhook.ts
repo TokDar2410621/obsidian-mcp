@@ -48,6 +48,49 @@ export function changedNotesOf(payload: unknown): string[] {
   return [...out].slice(0, MAX_TRIGGER_FILES);
 }
 
+/** Plafond du delta transmis au graphe. Au-dela, un build complet vaut mieux. */
+const MAX_GRAPH_DELTA_FILES = 500;
+
+/**
+ * Delta complet d'un push pour le batissage differentiel du graphe : notes
+ * changees ET notes supprimees.
+ *
+ * Distinct de {@link changedNotesOf}, et pour deux raisons de fond. D'abord les
+ * suppressions : l'ancien lecteur ignorait `commits[].removed`, donc une note
+ * effacee du coffre gardait ses noeuds dans le graphe pour toujours ; seule la
+ * reconstruction complete les purgeait. Ensuite les filtres : les echos
+ * excluent 08-auto pour ne pas s'echoer eux-memes, mais le graphe, lui, indexe
+ * ces notes (le build complet les inclut) ; le delta doit refleter le build,
+ * pas les echos, sinon les deux chemins divergent et la derive s'installe.
+ * Une note a la fois changee et supprimee dans la meme rafale de commits est
+ * comptee supprimee : c'est son dernier etat.
+ */
+export function pushDeltaOf(payload: unknown): { changed: string[]; removed: string[] } {
+  const p = payload as {
+    commits?: Array<{ added?: string[]; modified?: string[]; removed?: string[] }>;
+  } | null;
+  const changed = new Set<string>();
+  const removed = new Set<string>();
+  const noteValide = (f: unknown): f is string =>
+    typeof f === 'string' && f.endsWith('.md') && !f.startsWith('_templates/');
+  for (const c of p?.commits ?? []) {
+    for (const f of [...(c.added ?? []), ...(c.modified ?? [])]) {
+      if (!noteValide(f)) continue;
+      changed.add(f);
+      removed.delete(f); // recree apres suppression : c'est un changement
+    }
+    for (const f of c.removed ?? []) {
+      if (!noteValide(f)) continue;
+      removed.add(f);
+      changed.delete(f); // supprime apres modification : c'est une suppression
+    }
+  }
+  return {
+    changed: [...changed].slice(0, MAX_GRAPH_DELTA_FILES),
+    removed: [...removed].slice(0, MAX_GRAPH_DELTA_FILES),
+  };
+}
+
 /** Render the dated echoes section (newest first, capped). Pure, testable. */
 export function renderEchos(
   existing: string,
@@ -118,9 +161,11 @@ export function registerGithubWebhook(
 
     if (event === 'push') {
       const changed = changedNotesOf(req.body);
+      const delta = pushDeltaOf(req.body);
       logger.info('Webhook push received', {
         changed: changed.length,
         files: changed.slice(0, 3),
+        graphDelta: { changed: delta.changed.length, removed: delta.removed.length },
       });
       rag
         .refresh()
@@ -144,9 +189,20 @@ export function registerGithubWebhook(
               logger.error('Capture link sweep (webhook) failed', { error: String(error) }),
             ),
         )
-        .then(() => graph?.build())
+        // Batissage DIFFERENTIEL : le graphe n'est plus reconstruit, il est
+        // modifie. Cout strictement proportionnel au delta du push (une note
+        // changee = une extraction, une supprimee = zero appel), la ou le
+        // build complet rebalayait 2000+ empreintes et depensait son budget de
+        // reparation a CHAQUE push, 80 a 214 fois par jour. La reconstruction
+        // complete vit desormais sur un cron nocturne (rebuild-cron.ts) : le
+        // differentiel sert la fraicheur, la reconstruction sert la verite.
+        .then(() =>
+          delta.changed.length || delta.removed.length
+            ? graph?.applyChanges(delta.changed, delta.removed)
+            : undefined,
+        )
         .then(g => {
-          if (g) logger.info('Graph rebuild (webhook) complete', g);
+          if (g) logger.info('Graph delta (webhook) applied', g);
         })
         // Event-driven cognition (diagnostic gaps #5/#6): thinking is triggered
         // by what just happened, not only by the clock. Deterministic and free:

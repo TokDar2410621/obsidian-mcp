@@ -30,6 +30,7 @@ import { registerGithubWebhook } from '@/server/local/github-webhook';
 import { createSynapsesService } from '@/services/synapses';
 import { registerSynapsesTools } from '@/mcp/synapses-tool-registrations';
 import { scheduleSynapsesDigest } from '@/services/synapses/digest-cron';
+import { scheduleGraphRebuild } from '@/services/graph/rebuild-cron';
 import { createGraphService } from '@/services/graph';
 import { registerGraphTools } from '@/mcp/graph-tool-registrations';
 import { createLearning } from '@/services/learning';
@@ -412,6 +413,12 @@ Configure ChatGPT/Claude with:
         }
         if (reflection) {
           scheduleDailyReflection(reflection);
+        }
+        if (graphService) {
+          // Le filet de verite du batissage differentiel : le webhook ne fait
+          // plus que des deltas, cette passe nocturne rejoue le build complet
+          // (cout nul a cache chaud) et repare les extractions vides.
+          scheduleGraphRebuild(graphService);
         }
         if (notifier) {
           console.log('✓ ntfy notifications enabled');
