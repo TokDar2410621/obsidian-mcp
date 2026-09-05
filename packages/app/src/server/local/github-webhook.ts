@@ -102,6 +102,36 @@ export function registerGithubWebhook(
   const vault = organs?.vault ?? null;
   const reflection = organs?.reflection ?? null;
 
+  // Coalesce graph rebuilds.
+  //
+  // The vault is written by eleven workers plus the server itself, so it takes
+  // 80 to 214 pushes a day, and each one used to rebuild the knowledge graph.
+  // The build is not free: it calls the LLM once per changed note, plus up to
+  // MAX_EMPTY_RETRIES_PER_BUILD notes it retries. At a hundred builds a day
+  // that retry budget alone is two thousand calls, spent again and again.
+  //
+  // The RAG reindex stays immediate: it is embeddings-only, cheap, and it is
+  // what keeps search fresh. Only the LLM-priced part waits.
+  const FENETRE_MS = Number(process.env.GRAPH_DEBOUNCE_MS ?? 15 * 60 * 1000);
+  let minuterie: NodeJS.Timeout | null = null;
+  let enAttente = 0;
+
+  const planifierGraphe = (): void => {
+    if (!graph) return;
+    enAttente++;
+    if (minuterie) return; // une seule reconstruction en vol
+    minuterie = setTimeout(() => {
+      const groupes = enAttente;
+      minuterie = null;
+      enAttente = 0;
+      graph
+        .build()
+        .then(g => logger.info('Graph rebuild (debounced) complete', { ...g, pushes: groupes }))
+        .catch(error => logger.error('Graph rebuild (debounced) failed', { error: String(error) }));
+    }, FENETRE_MS);
+    if (typeof minuterie.unref === 'function') minuterie.unref(); // ne retient pas le process
+  };
+
   app.post('/webhook/github', (req: Request, res: Response) => {
     const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
     if (!rawBody) {
@@ -144,9 +174,13 @@ export function registerGithubWebhook(
               logger.error('Capture link sweep (webhook) failed', { error: String(error) }),
             ),
         )
-        .then(() => graph?.build())
-        .then(g => {
-          if (g) logger.info('Graph rebuild (webhook) complete', g);
+        // Le graphe ne se rebatit plus ici : il est planifie et coalesce (voir
+        // planifierGraphe). Les echos ci-dessous lisent le graphe DEJA bati,
+        // ce qui reste juste : ils traversent des aretes existantes, et une
+        // note tout juste ecrite n'a de voisins interessants que par ses
+        // wikilinks, que le graphe porte deja.
+        .then(() => {
+          planifierGraphe();
         })
         // Event-driven cognition (diagnostic gaps #5/#6): thinking is triggered
         // by what just happened, not only by the clock. Deterministic and free:
