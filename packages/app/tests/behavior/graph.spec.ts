@@ -325,3 +325,36 @@ describe('GraphRAG — echoes par wikilinks (association native, sans LLM)', () 
     expect(second.entities).toBeGreaterThan(0); // pas de regression a vide
   });
 });
+
+describe('GraphRAG — reponses tronquees', () => {
+  // Constate en production le 2026-09-05 : le modele repondait un JSON valide,
+  // max_tokens=1024 le coupait avant l'accolade fermante, JSON.parse jetait, et
+  // le `catch` nu rendait « vide ». 695 notes ont ete comptees vides pour ca.
+  it('sauve les entites d un JSON coupe en plein tableau', () => {
+    const coupe = '{\n  "entities": [\n    "Redis",\n    "SendMeNow",\n    "Stri';
+    const r = parseExtraction(coupe);
+    expect(r.entities).toContain('Redis');
+    expect(r.entities).toContain('SendMeNow');
+  });
+
+  it('sauve les triplets complets et jette les triplets coupes', () => {
+    const coupe =
+      '{"entities":["A","B"],"relations":[{"source":"A","relation":"utilise","target":"B"},{"source":"C","rela';
+    const r = parseExtraction(coupe);
+    expect(r.entities).toEqual(['A', 'B']);
+    expect(r.relations).toHaveLength(1);
+    expect(r.relations[0]).toEqual({ source: 'A', relation: 'utilise', target: 'B' });
+  });
+
+  it('ne casse pas sur du vrai vide', () => {
+    expect(parseExtraction('').entities).toEqual([]);
+    expect(parseExtraction('aucune entite ici').entities).toEqual([]);
+  });
+
+  it('un JSON complet passe toujours par le chemin normal', () => {
+    const bon = '{"entities":["Redis"],"relations":[{"source":"Redis","relation":"sert","target":"App"}]}';
+    const r = parseExtraction(bon);
+    expect(r.entities).toEqual(['Redis']);
+    expect(r.relations).toHaveLength(1);
+  });
+});
