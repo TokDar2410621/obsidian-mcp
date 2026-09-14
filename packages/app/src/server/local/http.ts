@@ -17,6 +17,8 @@ import { registerTools } from '@/mcp/tool-registrations';
 import { registerResources } from '@/mcp/resource-registrations';
 import { registerOAuthRoutes } from '@/server/shared/oauth-routes';
 import { registerMcpRoute } from '@/server/shared/mcp-routes';
+import { serveurGarde } from '@/services/securite/garde-mcp';
+import { registerOutilsSecurite } from '@/services/securite/outil-deverrouiller';
 import { createInMemoryAuthStore, createFileAuthStore } from '@/services/auth/stores';
 // Imported from its own module (not the stores barrel) so `pg` never reaches the lambda bundle.
 import { createPostgresAuthStore } from '@/services/auth/stores/postgres-store';
@@ -124,34 +126,44 @@ const mcpServer = new McpServer({
   instructions: MCP_SERVER_INSTRUCTIONS,
 });
 
-registerTools(mcpServer, () => vaultManager);
+// Les outils de securite s'enregistrent sur le serveur BRUT : derriere la
+// garde, ils seraient inappelables quand elle est fermee, c'est-a-dire
+// exactement quand on en a besoin.
+registerOutilsSecurite(mcpServer);
+
+// Tout le reste passe par le serveur GARDE : lecture et suppression dans les
+// zones sensibles exigent une fenetre ouverte, sauf pour les appelants de
+// confiance (jeton local : Claude Code, workers, crons).
+const serveurOutils = serveurGarde(mcpServer);
+
+registerTools(serveurOutils, () => vaultManager);
 registerResources(mcpServer, () => vaultManager);
 
 // Optional semantic RAG layer (search-cerveau / ask-cerveau). Null unless
 // OPENAI_API_KEY is set — absent config leaves the existing tools untouched.
 const ragService = createRagService(vaultManager);
 if (ragService) {
-  registerRagTools(mcpServer, ragService);
+  registerRagTools(serveurOutils, ragService);
 }
 
 // Optional Synapses "thinking" layer (suggest-links / audit-coherence /
 // find-themes / cerveau-digest). Needs RAG + ANTHROPIC_API_KEY.
 const synapsesService = ragService ? createSynapsesService(ragService) : null;
 if (synapsesService) {
-  registerSynapsesTools(mcpServer, synapsesService);
+  registerSynapsesTools(serveurOutils, synapsesService);
 }
 
 // Optional GraphRAG layer (graph-cerveau / graph-overview). Needs RAG + ANTHROPIC_API_KEY.
 const graphService = ragService ? createGraphService(ragService) : null;
 if (graphService) {
-  registerGraphTools(mcpServer, graphService);
+  registerGraphTools(serveurOutils, graphService);
 }
 
 // Optional learning loops (remember-preference / consolidate-cerveau / find-gaps).
 // Also injects the feedback memory into ask-cerveau. Needs RAG + ANTHROPIC_API_KEY.
 const learning = ragService ? createLearning(ragService, vaultManager) : null;
 if (learning && ragService) {
-  registerLearningTools(mcpServer, learning.service, learning.store);
+  registerLearningTools(serveurOutils, learning.service, learning.store);
   ragService.setLearningsProvider(() => learning.store.getLearnings());
 }
 
@@ -285,7 +297,7 @@ const poussoirService = new PoussoirService({
 // binaries (images, PDFs) out of the git vault. Independent of RAG/Anthropic.
 const bucketStore = createBucketStore();
 if (bucketStore) {
-  registerStorageTools(mcpServer, bucketStore);
+  registerStorageTools(serveurOutils, bucketStore);
 }
 
 const app = express();
