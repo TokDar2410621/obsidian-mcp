@@ -8,6 +8,7 @@ import { Express, Request, Response, NextFunction } from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import * as auth from '@/services/auth';
+import { avecAppelant, estJetonLocal } from '@/services/securite/appelant';
 import { logger } from '@/utils/logger';
 
 /**
@@ -26,6 +27,15 @@ async function authenticateToken(req: Request, res: Response, next: NextFunction
 
   const token = authHeader.substring(7);
 
+  // Le jeton LOCAL (Claude Code, workers, crons) authentifie a lui seul ET
+  // marque l'appel comme de confiance : la garde des zones sensibles ne mordra
+  // pas. C'est la seule chose qui distingue ces appelants de claude.ai, qui
+  // frappe la meme route, en HTTP, avec le meme client OAuth.
+  if (estJetonLocal(token)) {
+    avecAppelant({ deConfiance: true, origine: 'local' }, next);
+    return;
+  }
+
   if (!(await auth.validateAccessToken(token))) {
     res.status(401).json({
       error: 'invalid_token',
@@ -34,7 +44,7 @@ async function authenticateToken(req: Request, res: Response, next: NextFunction
     return;
   }
 
-  next();
+  avecAppelant({ deConfiance: false, origine: 'claude.ai' }, next);
 }
 
 /**
