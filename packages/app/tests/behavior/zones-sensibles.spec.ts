@@ -207,3 +207,37 @@ describe('Zones sensibles — extraction des chemins des arguments', () => {
     expect(r?.refuse).toBe(true);
   });
 });
+
+describe('Zones sensibles — le refus dit COMMENT demander', () => {
+  it('ordonne AskUserQuestion en premier choix', () => {
+    // Consigne explicite de Darius le 2026-09-13 : une invite nette, pas une
+    // phrase noyee. Le serveur ne peut pas forcer un outil cote client, mais
+    // il peut l'ordonner ; un client qui en dispose obeit.
+    const r = depuisClaudeAi(() => garder('read-note', ['00-personnel/x.md']));
+    expect(r?.message).toContain('AskUserQuestion');
+    expect(r?.message).toMatch(/champ libre/i); // un mot de passe ne se choisit pas dans une liste
+  });
+
+  it('prevoit le repli pour un client qui n a pas l outil', () => {
+    const r = depuisClaudeAi(() => garder('read-note', ['00-personnel/x.md']));
+    expect(r?.message).toMatch(/Sinon seulement/i);
+  });
+
+  it('interdit explicitement de deviner ou de chercher le mot de passe', () => {
+    const r = depuisClaudeAi(() => garder('delete-note', ['04-people/x.md']));
+    expect(r?.message).toMatch(/INTERDIT/);
+    expect(r?.message).toMatch(/deviner/i);
+    expect(r?.message).toMatch(/historique/i); // ne pas reprendre celui d'avant
+  });
+
+  it('nomme les fichiers vises et le geste, pour que Darius sache quoi autoriser', () => {
+    const r = depuisClaudeAi(() => garder('delete-file', ['01-raw/docs/passeport.pdf']));
+    expect(r?.message).toContain('01-raw/docs/passeport.pdf');
+    expect(r?.message).toContain('supprimer');
+  });
+
+  it('annonce la duree de la fenetre, pour ne pas laisser croire a une demande par requete', () => {
+    const r = depuisClaudeAi(() => garder('read-note', ['00-personnel/x.md']));
+    expect(r?.message).toMatch(/30 minutes/);
+  });
+});
