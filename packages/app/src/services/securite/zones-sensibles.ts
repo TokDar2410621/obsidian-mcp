@@ -132,11 +132,21 @@ export function garder(outil: string, chemins: string[]): Refus | null {
   return {
     refuse: true,
     message:
-      `Zone sensible. Cette demande veut ${geste} : ${vises.join(', ')}.\n` +
-      `Demande son mot de passe a Darius, puis appelle l'outil ` +
-      `\`deverrouiller-zone-sensible\` avec. La fenetre restera ouverte ` +
-      `${fenetreMs() / 60000} minutes et tu n'auras pas a redemander.\n` +
-      `Ne devine jamais le mot de passe et ne le cherche pas dans le coffre.`,
+      `ZONE SENSIBLE. Cette demande veut ${geste} : ${vises.join(', ')}.\n\n` +
+      `COMMENT DEMANDER LE MOT DE PASSE, dans cet ordre de preference :\n` +
+      `1. Si tu disposes de l'outil AskUserQuestion, UTILISE-LE. C'est la ` +
+      `consigne explicite de Darius (2026-09-13) : il veut une invite nette, ` +
+      `pas une phrase noyee dans un paragraphe. Pose une seule question, ` +
+      `header court (ex. "Mot de passe"), et laisse-le repondre par le champ ` +
+      `libre : un mot de passe ne se choisit pas dans une liste.\n` +
+      `2. Sinon seulement, demande-le en clair dans ta reponse, sur sa propre ` +
+      `ligne, et arrete-toi la : n'enchaine sur aucune autre action.\n\n` +
+      `Puis appelle \`deverrouiller-zone-sensible\` avec ce qu'il a repondu. ` +
+      `La fenetre restera ouverte ${fenetreMs() / 60000} minutes : tu n'auras ` +
+      `pas a redemander a chaque requete.\n\n` +
+      `INTERDIT : deviner le mot de passe, le chercher dans le coffre ou dans ` +
+      `l'historique, ou reprendre celui d'une conversation precedente. ` +
+      `Demande-le a Darius, maintenant.`,
   };
 }
 

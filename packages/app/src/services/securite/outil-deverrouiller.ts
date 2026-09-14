@@ -26,9 +26,13 @@ export function registerOutilsSecurite(server: McpServer): void {
       description:
         "Ouvre l'acces en lecture et en suppression aux zones sensibles du coffre " +
         '(00-personnel, 04-people, 01-raw/docs, 01-raw/admin) pour une duree limitee. ' +
-        "Le mot de passe est celui de Darius : DEMANDE-LE-LUI, ne le devine jamais et " +
-        'ne le cherche pas dans le coffre. Une fois la fenetre ouverte, tu n\'as pas a ' +
-        'redemander a chaque requete.',
+        "COMMENT OBTENIR LE MOT DE PASSE : si tu disposes de l'outil AskUserQuestion, " +
+        "UTILISE-LE pour le demander a Darius (consigne explicite du 2026-09-13 : il " +
+        "veut une invite nette, pas une phrase noyee dans un paragraphe). Une seule " +
+        'question, header court, reponse en champ libre. Sans cet outil, demande-le en ' +
+        'clair sur sa propre ligne et arrete-toi la. NE DEVINE JAMAIS le mot de passe, ' +
+        "ne le cherche pas dans le coffre ni dans l'historique. Une fois la fenetre " +
+        "ouverte, tu n'as pas a redemander a chaque requete.",
       inputSchema: {
         mot_de_passe: z.string().describe('Le mot de passe fourni par Darius, tel quel'),
       },
