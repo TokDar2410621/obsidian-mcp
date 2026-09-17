@@ -14,7 +14,12 @@ import { logger } from '@/utils/logger';
  *    send": two minutes);
  *  - it comes back until done (skipping is possible but resets the streak:
  *    loss aversion is the only teeth self-report allows);
- *  - the evening relance makes the dodge VISIBLE instead of silent.
+ *  - the evening relance makes the dodge VISIBLE instead of silent;
+ *  - PAST `SEUIL_JOURS_POURQUOI` days sitting unconsumed, it stops coming
+ *    back: repeating a reminder that never lands is harcelement, not a
+ *    nudge (regle `blocage-demander-pourquoi`, "la question n'est jamais
+ *    reposee deux fois"). The gesture is retired (Passe), ONE distinct
+ *    "pourquoi" push replaces the usual one, and the queue moves on.
  *
  * Queue: 08-auto/_poussoir.md, one `## Title` section per gesture, body =
  * the fully-prepared content. A section is consumed when its body carries a
@@ -28,6 +33,18 @@ import { logger } from '@/utils/logger';
 
 const FICHIER = '08-auto/_poussoir.md';
 const ETAT = '08-auto/_poussoir-state.json';
+
+/** Jours consecutifs sans suite avant de cesser de repousser un geste
+ *  (regle blocage-demander-pourquoi : la question ne se repose jamais
+ *  deux fois, donc on ne rappelle pas indefiniment non plus). */
+const SEUIL_JOURS_POURQUOI = 3;
+
+/** Difference en jours calendaires entre deux jours Montreal (YYYY-MM-DD). */
+function diffJours(depuis: string, jusqua: string): number {
+  const [ay, am, ad] = depuis.split('-').map(Number);
+  const [by, bm, bd] = jusqua.split('-').map(Number);
+  return Math.round((Date.UTC(by, bm - 1, bd) - Date.UTC(ay, am - 1, ad)) / 86_400_000);
+}
 
 export interface Geste {
   titre: string;
@@ -49,6 +66,10 @@ export interface EtatPoussoir {
   derniereRelance: string | null;
   /** Montreal day of the last "queue empty" nudge (one per day, max). */
   dernierVide: string | null;
+  /** Titre of the gesture currently served: detects when the queue moved on. */
+  gesteCourantTitre: string | null;
+  /** Montreal day THIS gesture (same titre) was first served. */
+  gesteCourantDepuis: string | null;
 }
 
 export interface PoussoirDeps {
@@ -109,6 +130,8 @@ export class PoussoirService {
       dernierEnvoi: null,
       derniereRelance: null,
       dernierVide: null,
+      gesteCourantTitre: null,
+      gesteCourantDepuis: null,
     };
     try {
       const brut = JSON.parse(await this.deps.vault.readFile(ETAT)) as Partial<EtatPoussoir>;
@@ -125,6 +148,8 @@ export class PoussoirService {
         dernierEnvoi: typeof brut.dernierEnvoi === 'string' ? brut.dernierEnvoi : null,
         derniereRelance: typeof brut.derniereRelance === 'string' ? brut.derniereRelance : null,
         dernierVide: typeof brut.dernierVide === 'string' ? brut.dernierVide : null,
+        gesteCourantTitre: typeof brut.gesteCourantTitre === 'string' ? brut.gesteCourantTitre : null,
+        gesteCourantDepuis: typeof brut.gesteCourantDepuis === 'string' ? brut.gesteCourantDepuis : null,
       };
     } catch {
       return vide;
@@ -169,6 +194,35 @@ export class PoussoirService {
     }
     if (etat.dernierTraite === jour) return { envoye: false, raison: 'deja traite aujourd hui' };
 
+    // Meme geste que la veille (par titre) : continue de compter ses jours.
+    // Geste different (queue avancee, texte reecrit) : le compteur repart.
+    const depuisGeste = etat.gesteCourantTitre === geste.titre ? etat.gesteCourantDepuis : null;
+    const gesteCourantDepuis = depuisGeste ?? jour;
+    const joursSansSuite = diffJours(gesteCourantDepuis, jour);
+
+    if (joursSansSuite >= SEUIL_JOURS_POURQUOI) {
+      // Regle blocage-demander-pourquoi : la question ne se repose jamais
+      // deux fois. Un geste qui ne part pas apres plusieurs jours ne merite
+      // plus un rappel, mais une question, puis le silence sur CE geste.
+      await this.deps.notify?.push({
+        title: '🤔 Ce geste dort, je le retire',
+        message: `${geste.titre}\n\nServi ${joursSansSuite} jours sans suite. Je ne le repousse plus (regle blocage-demander-pourquoi) : dis pourquoi dans 08-auto/_poussoir.md, ou prepare-en un autre.`,
+        priority: 4,
+        tags: ['thinking'],
+        ...(this.lien() ? { click: this.lien() } : {}),
+      });
+      await this.consommer('Passé');
+      await this.ecrireEtat({
+        ...etat,
+        serie: 0,
+        dernierTraite: jour,
+        gesteCourantTitre: null,
+        gesteCourantDepuis: null,
+      });
+      logger.info('poussoir: geste retire (dort)', { titre: geste.titre, joursSansSuite });
+      return { envoye: true, raison: 'retire: dort depuis trop longtemps' };
+    }
+
     // A missed day is said out loud: losing the streak must be FELT, else it
     // is not a streak, it is a counter.
     const seriePerdue =
@@ -185,7 +239,13 @@ export class PoussoirService {
       ...(this.lien() ? { click: this.lien() } : {}),
     });
     const serie = seriePerdue ? 0 : etat.serie;
-    await this.ecrireEtat({ ...etat, serie, dernierEnvoi: now.toISOString() });
+    await this.ecrireEtat({
+      ...etat,
+      serie,
+      dernierEnvoi: now.toISOString(),
+      gesteCourantTitre: geste.titre,
+      gesteCourantDepuis,
+    });
     return { envoye: true };
   }
 
