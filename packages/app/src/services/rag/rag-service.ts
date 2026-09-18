@@ -17,6 +17,7 @@ import type {
   VaultReader,
 } from '@/services/rag/types';
 import type { ToolResponse } from '@/mcp/handlers/types';
+import { filtrerResultats } from '@/services/securite/zones-sensibles';
 
 const INDEX_VERSION = 1;
 const DEFAULT_TOP_K = 8;
@@ -301,7 +302,7 @@ export class RagService {
   async searchCerveau(args: SearchArgs): Promise<ToolResponse> {
     try {
       await this.ensureReady();
-      const hits = await this.retrieve(args.query, args);
+      const { hits, masques } = await this.retrieve(args.query, args);
       // A search is also a recall: reinforce the traces of what surfaced
       // (humans consolidate what they retrieve, not only what they cite).
       try {
@@ -319,6 +320,9 @@ export class RagService {
           excerpt: h.excerpt,
         })),
         total: hits.length,
+        // Dit, jamais muet : un masquage silencieux ferait croire que la note
+        // n'existe pas, et Darius chercherait un bug la ou il y a une regle.
+        ...(masques > 0 ? { masques_zone_sensible: masques } : {}),
       });
     } catch (error: any) {
       return fail(error?.message ?? String(error));
@@ -340,12 +344,17 @@ export class RagService {
       // s'activait jamais et le modèle brodait sur des extraits hors sujet.
       // hit.score est le cosinus dense pur (0..1), comparable d'une question
       // à l'autre.
-      const hits = filtrerPertinents(await this.retrieve(args.question, args));
+      const { hits: bruts, masques } = await this.retrieve(args.question, args);
+      const hits = filtrerPertinents(bruts);
       if (hits.length === 0) {
         return ok({
-          answer: "Je ne trouve rien d'assez pertinent dans le cerveau pour répondre à ça.",
+          answer:
+            masques > 0
+              ? `Je ne trouve rien d'assez pertinent hors zone sensible pour répondre à ça. ${masques} extrait(s) pertinent(s) sont en zone protégée : déverrouille avec le mot de passe pour que je puisse les lire.`
+              : "Je ne trouve rien d'assez pertinent dans le cerveau pour répondre à ça.",
           citations: [],
           used_chunks: 0,
+          ...(masques > 0 ? { masques_zone_sensible: masques } : {}),
         });
       }
 
@@ -382,16 +391,26 @@ export class RagService {
           excerpt: h.excerpt,
         })),
         used_chunks: used.length,
+        ...(masques > 0 ? { masques_zone_sensible: masques } : {}),
       });
     } catch (error: any) {
       return fail(error?.message ?? String(error));
     }
   }
 
+  /**
+   * Recuperation semantique, et SEUL goulot par lequel passent search-cerveau
+   * et ask-cerveau. C'est donc ici que mord la garde des zones sensibles.
+   *
+   * Pourquoi ici et pas sur la reponse : ask-cerveau ne renvoie pas une liste,
+   * il fait REDIGER une reponse a partir des extraits. Filtrer les citations
+   * apres coup laisserait le contenu sensible dans la phrase deja ecrite. Un
+   * extrait masque ici n'atteint jamais le redacteur.
+   */
   private async retrieve(
     query: string,
     filters: { top_k?: number; folder?: string; notFolder?: string; tags?: string[] },
-  ): Promise<SearchHit[]> {
+  ): Promise<{ hits: SearchHit[]; masques: number }> {
     const topK = clampTopK(filters.top_k);
     const cfg = this.settings?.get().retrieval;
     const hybridOn = cfg ? cfg.hybrid : this.hybrid;
@@ -409,7 +428,7 @@ export class RagService {
         continue;
       candidates.push(i);
     }
-    if (candidates.length === 0) return [];
+    if (candidates.length === 0) return { hits: [], masques: 0 };
 
     // Dense ranking (cosine over normalised vectors).
     const denseScore = new Map<number, number>();
@@ -469,18 +488,29 @@ export class RagService {
       }
     }
 
-    return ranked.slice(0, topK).map(i => {
-      const chunk = this.chunks[i];
-      return {
-        path: chunk.file,
-        wikilink: toWikilink(chunk.file),
-        heading: chunk.heading,
-        tags: chunk.tags,
-        score: Math.round((denseScore.get(i) ?? 0) * 1000) / 1000,
-        excerpt: excerpt(chunk.text),
-        text: chunk.text,
-      };
-    });
+    // Ce que l'appelant AURAIT vu, moins ce qu'il a le droit de voir : le
+    // compte se prend sur le topK, sinon il annoncerait tous les extraits
+    // sensibles du coffre et non ceux qui manquent a cette reponse.
+    const fichier = (i: number): string => this.chunks[i].file;
+    const tete = ranked.slice(0, topK);
+    const masques = tete.length - filtrerResultats(tete, fichier).gardes.length;
+    const autorises = filtrerResultats(ranked, fichier).gardes;
+
+    return {
+      masques,
+      hits: autorises.slice(0, topK).map(i => {
+        const chunk = this.chunks[i];
+        return {
+          path: chunk.file,
+          wikilink: toWikilink(chunk.file),
+          heading: chunk.heading,
+          tags: chunk.tags,
+          score: Math.round((denseScore.get(i) ?? 0) * 1000) / 1000,
+          excerpt: excerpt(chunk.text),
+          text: chunk.text,
+        };
+      }),
+    };
   }
 
   /** Prepend the feedback memory to a question so the answer respects it. */
