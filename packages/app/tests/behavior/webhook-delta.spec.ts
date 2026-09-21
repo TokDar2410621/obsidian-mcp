@@ -55,3 +55,31 @@ describe('pushDeltaOf', () => {
     expect(pushDeltaOf({ commits: [{}] })).toEqual({ changed: [], removed: [] });
   });
 });
+
+describe('Webhook : la boucle de _echos.md', () => {
+  const push = (commits: Array<Record<string, string[]>>) => ({ commits });
+
+  /**
+   * Constate en prod le 2026-09-21 vers 22h UTC. `08-auto/_echos.md` est la
+   * SORTIE de la chaine que ce meme webhook declenche : le graphe l indexait
+   * (un appel LLM par cycle), l activation associative le reecrivait, le push
+   * repartait, le webhook resonnait. Environ un cycle par minute, sans fin.
+   * Le graphe continue d indexer le reste de 08-auto, c est voulu.
+   */
+  it('sa propre sortie ne redeclenche plus le graphe', () => {
+    expect(pushDeltaOf(push([{ modified: ['08-auto/_echos.md'] }])).changed).toEqual([]);
+    expect(pushDeltaOf(push([{ removed: ['08-auto/_echos.md'] }])).removed).toEqual([]);
+  });
+
+  it('le reste de 08-auto reste indexe : le delta suit toujours le build', () => {
+    const d = pushDeltaOf(push([{ modified: ['08-auto/_poussoir.md', '08-auto/_sante.md'] }]));
+    expect(d.changed).toEqual(['08-auto/_poussoir.md', '08-auto/_sante.md']);
+  });
+
+  it('un push qui ne contient QUE les echos ne donne aucun travail au graphe', () => {
+    // La condition exacte qui entretenait la boucle.
+    const d = pushDeltaOf(push([{ modified: ['08-auto/_echos.md'] }]));
+    expect(d.changed).toEqual([]);
+    expect(d.removed).toEqual([]);
+  });
+});

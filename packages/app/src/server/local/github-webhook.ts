@@ -30,6 +30,14 @@ const ECHOS_FILE = '08-auto/_echos.md';
 const MAX_ECHO_SECTIONS = 20;
 const MAX_TRIGGER_FILES = 10;
 
+/** Sorties d'agents : jamais des declencheurs d'echos. */
+const SORTIES_AGENTS = ['08-auto/', '_templates/', '99-graphify-out/'];
+
+/** Un fichier ecrit par le cerveau lui-meme, donc jamais un declencheur d'echo. */
+export function estSortieAgent(f: string): boolean {
+  return SORTIES_AGENTS.some(prefixe => f.startsWith(prefixe));
+}
+
 /**
  * Changed markdown notes of a push payload (added + modified across commits),
  * excluding the agents' own outputs (08-auto) so echoes never echo themselves.
@@ -40,8 +48,7 @@ export function changedNotesOf(payload: unknown): string[] {
   for (const c of p?.commits ?? []) {
     for (const f of [...(c.added ?? []), ...(c.modified ?? [])]) {
       if (typeof f !== 'string' || !f.endsWith('.md')) continue;
-      if (f.startsWith('08-auto/') || f.startsWith('_templates/') || f.startsWith('99-graphify-out/'))
-        continue;
+      if (estSortieAgent(f)) continue;
       out.add(f);
     }
   }
@@ -71,8 +78,14 @@ export function pushDeltaOf(payload: unknown): { changed: string[]; removed: str
   } | null;
   const changed = new Set<string>();
   const removed = new Set<string>();
+  // Le graphe indexe 08-auto volontairement : ce sont de vraies notes et le
+  // delta doit refleter le build complet. UNE exception, `_echos.md`, parce
+  // que ce fichier est la SORTIE de la chaine declenchee par ce meme webhook :
+  // l'indexer rendait la chaine son propre declencheur. Boucle constatee en
+  // prod le 2026-09-21 vers 22h UTC, environ un cycle par minute, chacun
+  // payant au moins une extraction LLM pour rien.
   const noteValide = (f: unknown): f is string =>
-    typeof f === 'string' && f.endsWith('.md') && !f.startsWith('_templates/');
+    typeof f === 'string' && f.endsWith('.md') && !f.startsWith('_templates/') && f !== ECHOS_FILE;
   for (const c of p?.commits ?? []) {
     for (const f of [...(c.added ?? []), ...(c.modified ?? [])]) {
       if (!noteValide(f)) continue;
