@@ -2,6 +2,7 @@ import type { Express, Request, Response } from 'express';
 import type { VaultManager } from '@/services/vault-manager';
 import { readAllFiles } from '@/services/vault-manager';
 import type { ConclusionsRegistry } from '@/services/conclusions/conclusions-registry';
+import { estSensible } from '@/services/securite/zones-sensibles';
 import { logger } from '@/utils/logger';
 
 /**
@@ -267,10 +268,35 @@ export interface PendingTask {
   demande: string;
   /** first meaningful lines of « ## Résultat » : the deliverable itself. */
   resultat: string;
+  /** the `resume:` line alone, without the field name glued in front. */
+  resume: string;
+  /** the paths listed on `livrables:` : what the task actually produced. */
+  livrables: string[];
+}
+
+/**
+ * Le bloc « ## Résultat » écrit par l'exécuteur, en ses deux champs utiles.
+ *
+ * Pourquoi : l'extrait brut de 320 caracteres coupait la ligne `livrables:`
+ * en plein milieu d'un chemin, donc la seule chose que Darius voulait voir,
+ * la note produite, etait systematiquement tronquee (vecu le 2026-09-01 avec
+ * la note Hallmark : ecrite, controlee, validee, jamais lue).
+ *
+ * Le bloc porte parfois les memes champs deux fois, une fois en clair et une
+ * fois entre RESULTAT_DEBUT/RESULTAT_FIN : on prend la premiere occurrence.
+ */
+export function parseResultat(block: string): { resume: string; livrables: string[] } {
+  const resume = (/^\s*resume\s*:\s*(.+)$/im.exec(block)?.[1] ?? '').trim();
+  const brut = (/^\s*livrables\s*:\s*(.+)$/im.exec(block)?.[1] ?? '').trim();
+  const livrables = brut
+    .split('|')
+    .map(p => p.replace(/\([^)]*\)\s*$/, '').trim())
+    .filter(Boolean);
+  return { resume, livrables };
 }
 
 /** Body of a `## Heading` section, up to the next `##` or end. */
-function section(content: string, name: string): string {
+export function section(content: string, name: string): string {
   const re = new RegExp(`##\\s+${name}\\s*\\n([\\s\\S]*?)(?=\\n##\\s|$)`, 'i');
   return (re.exec(content)?.[1] ?? '').trim();
 }
@@ -325,6 +351,8 @@ export async function listPendingTasks(vault: VaultManager): Promise<PendingTask
       /^created\s*:\s*(\d{4}-\d{2}-\d{2})/m.exec(content)?.[1] ??
       /(\d{4}-\d{2}-\d{2})/.exec(base)?.[1] ??
       '0000-00-00';
+    const blocResultat = section(content, 'Résultat');
+    const { resume, livrables } = parseResultat(blocResultat);
     out.push({
       path: rel,
       title,
@@ -332,7 +360,9 @@ export async function listPendingTasks(vault: VaultManager): Promise<PendingTask
       risque,
       date,
       demande: excerptOf(section(content, 'Demande'), 240),
-      resultat: excerptOf(section(content, 'Résultat')),
+      resultat: excerptOf(blocResultat),
+      resume,
+      livrables,
     });
   }
   // Échouées d'abord (elles sont coincées), puis le reste du plus RÉCENT au
@@ -657,6 +687,17 @@ export function registerValidationRoutes(
 
   const validTaskPath = (t: string): boolean => TASK_PATH_RE.test(t) && !t.includes('..');
 
+  /**
+   * Une note du coffre ouvrable depuis la revue : le livrable d'une tâche.
+   *
+   * Les zones sensibles sont refusées ICI, en dur, sans fenêtre ni mot de
+   * passe. Cette surface est ouverte par un jeton de téléphone, plus faible
+   * que l'OAuth du MCP : l'élargir aux livrables ne doit pas rouvrir la porte
+   * que la garde vient de fermer.
+   */
+  const validNotePath = (t: string): boolean =>
+    /^[A-Za-z0-9][^\s]*\.md$/.test(t) && !t.includes('..') && !estSensible(t);
+
   // Flip a task's statut. label describes the transition for the confirmation.
   const flip =
     (to: string, label: string, recordAs: 'valide' | 'rejete' | null = null) =>
@@ -782,7 +823,7 @@ export function registerValidationRoutes(
   app.get('/note', async (req: Request, res: Response) => {
     if (!gate(req, res)) return;
     const t = String(req.query.t ?? '');
-    if (!validTaskPath(t)) {
+    if (!validTaskPath(t) && !validNotePath(t)) {
       res.status(400).type('text/plain').send('bad note path');
       return;
     }
@@ -834,11 +875,23 @@ export function registerValidationRoutes(
                 : { pill: 'warn', label: 'à approuver', primary: 'Approuver', href: 'approuve' };
           // Le résumé pliable : ce que le chef a produit (ou ce qui a été
           // demandé si rien n'a encore été produit). Darius décide sans partir.
-          const summary = t.resultat || t.demande;
+          const summary = t.resume || t.resultat || t.demande;
+          // Les livrables en LIENS : c'est le dernier metre qui manquait. Une
+          // tache pouvait etre produite, controlee et validee sans que Darius
+          // puisse ouvrir ce qu'elle avait ecrit (Hallmark, 2026-09-01).
+          const liens = t.livrables
+            .map(p => {
+              const ouvrable = validNotePath(p);
+              return ouvrable
+                ? `<a class="note" href="/note?k=${k}&t=${encodeURIComponent(p)}">📄 ${escapeHtml(p)}</a>`
+                : `<p class="det">${escapeHtml(p)}</p>`;
+            })
+            .join('');
           const detail = [
             t.demande ? `<p class="lbl">Demandé</p><p class="det">${escapeHtml(t.demande)}</p>` : '',
-            t.resultat ? `<p class="lbl">Produit</p><p class="det">${escapeHtml(t.resultat)}</p>` : '',
-            `<a class="note" href="/note?k=${k}&t=${tp}">Ouvrir la note complète →</a>`,
+            t.resume ? `<p class="lbl">Produit</p><p class="det">${escapeHtml(t.resume)}</p>` : '',
+            t.livrables.length ? `<p class="lbl">Livrables</p>${liens}` : '',
+            `<a class="note" href="/note?k=${k}&t=${tp}">Ouvrir la fiche de tâche →</a>`,
           ].join('');
           return `<div class="card">
             <div class="head"><span class="pill ${kind.pill}">${kind.label}</span><span class="date">${escapeHtml(t.date)}</span></div>
