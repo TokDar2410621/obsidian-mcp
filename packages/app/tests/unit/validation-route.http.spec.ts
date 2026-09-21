@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import express from 'express';
 import type { Server } from 'node:http';
-import { registerValidationRoutes } from '@/server/local/validation-route';
+import { parseResultat, registerValidationRoutes, section } from '@/server/local/validation-route';
 import type { VaultManager } from '@/services/vault-manager';
 import { configureLogger } from '@/utils/logger';
 
@@ -313,6 +313,84 @@ describe('validation routes (HTTP)', () => {
       expect(content.indexOf('risque acceptable')).toBeLessThan(content.indexOf('## Résultat'));
     } finally {
       srv7.close();
+    }
+  });
+});
+
+/**
+ * Le dernier metre : rendre le livrable atteignable.
+ *
+ * Vecu le 2026-09-01 avec la tache « Cloner Hallmark et comparer sa methode
+ * de garde-fous » : executee pour de vrai, controlee fichier par fichier,
+ * passee en `validee`, et la note comparative produite n'a jamais ete lue.
+ * La revue montrait bien un extrait du resultat, mais coupait la ligne
+ * `livrables:` en plein chemin et son seul lien renvoyait vers la fiche de
+ * tache, jamais vers ce qui avait ete ecrit.
+ */
+const TACHE_HALLMARK = `---
+type: tache
+statut: a-valider
+risque: sans-risque
+cible: vault
+created: 2026-09-01
+---
+
+# Cloner Hallmark et comparer sa methode de garde-fous
+
+## Demande
+Cloner Nutlope/hallmark, lire son SKILL.md, ecrire une note comparative.
+
+## Résultat
+
+**2026-09-01 02:50**
+
+resume: Nutlope/hallmark clone reellement dans un repertoire isole, note comparative ecrite face au skill web-design.
+livrables: 05-projects/cerveau/tools/_p49_hallmark_skill_test/repo (clone, commit 13ac0ec7) | 05-projects/veille-web-design-motion-scroll/learnings/2026-09-01-hallmark-vs-webdesign-garde-fous.md
+criteres: 1 OK note ancree ; 2 OK zero em-dash
+`;
+
+describe('Revue : le livrable est atteignable', () => {
+  it('parseResultat separe le resume des livrables, parentheses retirees', () => {
+    const { resume, livrables } = parseResultat(section(TACHE_HALLMARK, 'Résultat'));
+    expect(resume).toContain('note comparative ecrite');
+    expect(resume).not.toContain('livrables:');
+    expect(livrables).toEqual([
+      '05-projects/cerveau/tools/_p49_hallmark_skill_test/repo',
+      '05-projects/veille-web-design-motion-scroll/learnings/2026-09-01-hallmark-vs-webdesign-garde-fous.md',
+    ]);
+  });
+
+  it('la carte de revue offre un lien vers la note produite, pas seulement vers la fiche', async () => {
+    vault.files.set('09-taches/hallmark.md', TACHE_HALLMARK);
+    const html = await (await fetch(`${base}/revue?k=${TOKEN}`)).text();
+    expect(html).toContain(
+      '2026-09-01-hallmark-vs-webdesign-garde-fous.md',
+    );
+    expect(html).toContain('Livrables');
+    expect(html).toContain('Ouvrir la fiche de tâche');
+  });
+
+  it('/note ouvre le livrable lui-meme, pas seulement une tache', async () => {
+    const livrable = '05-projects/veille-web-design-motion-scroll/learnings/2026-09-01-hallmark-vs-webdesign-garde-fous.md';
+    vault.files.set(livrable, '# Hallmark vs web-design\n\nLe verdict tient en quatre pieces.\n');
+    const r = await fetch(`${base}/note?k=${TOKEN}&t=${encodeURIComponent(livrable)}`);
+    expect(r.status).toBe(200);
+    expect(await r.text()).toContain('Le verdict tient en quatre pieces');
+  });
+
+  it('/note REFUSE une zone sensible, sans fenetre ni mot de passe', async () => {
+    // La revue s'ouvre avec un jeton de telephone, plus faible que l'OAuth du
+    // MCP : l'elargir aux livrables ne doit pas rouvrir la porte fermee ailleurs.
+    process.env.CERVEAU_MOT_DE_PASSE = 'peu-importe';
+    try {
+      vault.files.set('00-personnel/contacts.md', '# Contacts\n\nadresse privee\n');
+      const r = await fetch(
+        `${base}/note?k=${TOKEN}&t=${encodeURIComponent('00-personnel/contacts.md')}`,
+      );
+      expect(r.status).toBe(400);
+      expect(await r.text()).not.toContain('adresse privee');
+    } finally {
+      delete process.env.CERVEAU_MOT_DE_PASSE;
     }
   });
 });
