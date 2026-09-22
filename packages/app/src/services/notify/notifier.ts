@@ -32,7 +32,25 @@ export interface Notification {
   tags?: string[];
   /** Up to 3 tap-to-answer buttons (ntfy 'view' actions). */
   actions?: NotificationAction[];
+  /**
+   * Attachment URL. ntfy fetches it from OUTSIDE, so it must be publicly
+   * reachable and stay alive for DAYS: Darius opens the notification hours
+   * later and the phone reloads the thumbnail then. A 15-minute TTL yields a
+   * dead image. The signed link lives in services/livraison/lien-signe.ts.
+   */
+  attach?: string;
+  /** Filename shown next to `attach`. Also lands in the vault journal. */
+  filename?: string;
+  /** Icon URL. ntfy supports JPEG and PNG only. */
+  icon?: string;
 }
+
+/**
+ * Do NOT widen Notification without a delivery reason. It is the narrow waist
+ * between every sweep and the phone: `click` and `actions` already cover
+ * questions, decisions and relaunches, and every added field has to be carried
+ * by the JSON body AND by the vault journal below, or a push loses its trace.
+ */
 
 export interface NotifyPusher {
   push(notification: Notification): Promise<void>;
@@ -78,6 +96,11 @@ export class NtfyNotifier implements NotifyPusher {
           priority: notification.priority ?? 3,
           tags: notification.tags ?? [],
           ...(notification.click ? { click: notification.click } : {}),
+          // The deliverable itself, not its path: ntfy fetches `attach` and the
+          // phone renders the image inline (docs.ntfy.sh/publish, 2026-09-21).
+          ...(notification.attach ? { attach: notification.attach } : {}),
+          ...(notification.filename ? { filename: notification.filename } : {}),
+          ...(notification.icon ? { icon: notification.icon } : {}),
           ...(notification.actions && notification.actions.length > 0
             ? {
                 actions: notification.actions.slice(0, 3).map(a => ({
@@ -116,7 +139,11 @@ export function createNotificationJournal(vault: VaultManager): NotificationJour
       const day = now.toISOString().slice(0, 10);
       const hm = now.toISOString().slice(11, 16);
       const msg = notification.message.replace(/\s+/g, ' ').trim();
-      const line = `- ${hm} · **${notification.title}** · ${msg.length > 160 ? `${msg.slice(0, 157)}...` : msg}${ok ? '' : ' · ÉCHEC ntfy'}`;
+      // The attachment's name belongs in the journal too: this file IS the
+      // memory of what the cerveau delivered (ntfy caches ~12h). Without it,
+      // moving the deliverable into `attach` would erase its only trace.
+      const piece = notification.filename ? ` · 📎 ${notification.filename}` : '';
+      const line = `- ${hm} · **${notification.title}** · ${msg.length > 160 ? `${msg.slice(0, 157)}...` : msg}${piece}${ok ? '' : ' · ÉCHEC ntfy'}`;
       const header = [
         '---', 'type: note', 'tags: [auto, notifications]', '---', '',
         '# Journal des notifications (auto)', '',

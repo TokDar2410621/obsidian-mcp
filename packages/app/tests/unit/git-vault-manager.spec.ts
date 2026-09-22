@@ -1,10 +1,15 @@
 import { describe, it, expect, vi, beforeAll } from 'vitest';
 import { tmpdir } from 'node:os';
 import { mkdtempSync } from 'node:fs';
-import { readFile as fsReadFile } from 'node:fs/promises';
+import { readFile as fsReadFile, writeFile as fsWriteFile } from 'node:fs/promises';
 import path from 'node:path';
 import { stripEmDash, GitVaultManager } from '@/services/git-vault-manager';
-import { writeStateFile, toVaultRelativePath, type VaultManager } from '@/services/vault-manager';
+import {
+  readBinary,
+  writeStateFile,
+  toVaultRelativePath,
+  type VaultManager,
+} from '@/services/vault-manager';
 import { configureLogger } from '@/utils/logger';
 
 beforeAll(() => {
@@ -192,5 +197,57 @@ describe('GitVaultManager : le garde-fou est cable a chaque entree', () => {
     const { vm } = vaultLazy();
     await vm.writeFileLazy('08-auto\\_test-backslash.json', '{"ok":1}');
     expect(await vm.readFile('08-auto/_test-backslash.json')).toBe('{"ok":1}');
+  });
+});
+
+// --- lecture BINAIRE : une image doit sortir du coffre intacte ----------------
+
+describe('GitVaultManager : readBinaryFile', () => {
+  it('46. rend les octets EXACTS d un PNG, sans corruption utf8', async () => {
+    // Le passage par une chaine utf8 remplace tout octet non decodable par
+    // U+FFFD : l en-tete 89 50 4E 47 ne survivrait pas, et le telephone
+    // afficherait une image cassee.
+    const { vm, dir } = vaultLazy();
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe, 0x00, 0x7f]);
+    await fsWriteFile(path.join(dir, 'hero.png'), png);
+
+    const lus = await vm.readBinaryFile('hero.png');
+    expect(lus.equals(png)).toBe(true);
+    expect(lus.subarray(0, 4).toString('hex')).toBe('89504e47');
+  });
+
+  it('sert une ecriture lazy en attente, comme readFile', async () => {
+    const { vm } = vaultLazy();
+    await vm.writeFileLazy('08-auto/_livraison-state.json', '{"version":1}');
+    expect((await vm.readBinaryFile('08-auto/_livraison-state.json')).toString('utf8')).toBe(
+      '{"version":1}',
+    );
+  });
+
+  it('refuse un chemin absolu, comme tout le reste du coffre', async () => {
+    const { vm } = vaultLazy();
+    await expect(vm.readBinaryFile('C:\\Users\\leroi\\note.md')).rejects.toThrow();
+  });
+});
+
+describe('readBinary : le repli des doubles de test', () => {
+  it('47. sans readBinaryFile, retombe sur un Buffer utf8 de readFile', async () => {
+    // C est ce qui garde readBinaryFile OPTIONNELLE : onze classes implementent
+    // VaultManager, dont neuf FakeVault dans tests/unit.
+    const sansBinaire = {
+      readFile: async () => 'contenu du coffre',
+    } as unknown as VaultManager;
+    const lu = await readBinary(sansBinaire, 'a/b.md');
+    expect(Buffer.isBuffer(lu)).toBe(true);
+    expect(lu.toString('utf8')).toBe('contenu du coffre');
+  });
+
+  it('utilise readBinaryFile quand le coffre sait le faire', async () => {
+    const octets = Buffer.from([0x00, 0xff, 0x10]);
+    const avecBinaire = {
+      readFile: async () => 'jamais appele',
+      readBinaryFile: async () => octets,
+    } as unknown as VaultManager;
+    expect((await readBinary(avecBinaire, 'a/b.png')).equals(octets)).toBe(true);
   });
 });
