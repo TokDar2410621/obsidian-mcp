@@ -286,6 +286,8 @@ export class LivraisonService {
       priority: 4,
       tags: ['white_check_mark'],
       ...(piece.attach ? { attach: piece.attach, filename: piece.filename } : {}),
+      // L'image MONTREE dans la notification, pas seulement attachee.
+      ...(piece.icon ? { icon: piece.icon } : {}),
       ...(click ? { click } : {}),
       ...(actions.length ? { actions } : {}),
     };

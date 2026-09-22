@@ -127,3 +127,45 @@ describe('piece-jointe : la construction', () => {
     expect(typeMime('a/b.py')).toContain('text/plain');
   });
 });
+
+/**
+ * Le dernier metre du dernier metre. Le 2026-09-22 a 06h25 la premiere
+ * livraison reelle a pousse `attach` vers une vraie image, et Darius a
+ * repondu « c'est toujours un lien ». Pour une piece jointe externe ntfy ne
+ * telecharge rien : le message publie portait « None » en type et en taille,
+ * donc le client affiche un lien. Seul `icon` montre l'image.
+ */
+describe('Piece jointe : une image se MONTRE, elle ne se telecharge pas', () => {
+  const signeur = (chemin: string) => ({
+    brut: `https://x.test/livrable?f=${encodeURIComponent(chemin)}&e=9&s=sig`,
+    vue: `https://x.test/livrable/vue?f=${encodeURIComponent(chemin)}&e=9&s=sig`,
+  });
+
+  it('un JPEG porte icon EN PLUS de attach', () => {
+    const p = construirePieceJointe('01-raw/images/card-og-image.jpg', signeur);
+    expect(p.attach).toContain('card-og-image.jpg');
+    expect(p.icon).toBe(p.attach);
+    expect(p.filename).toBe('card-og-image.jpg');
+  });
+
+  it('un PNG aussi', () => {
+    expect(construirePieceJointe('01-raw/fichiers/preuve.png', signeur).icon).toBeTruthy();
+  });
+
+  it('un PDF reste attache SANS icon : ntfy ne rend que JPEG et PNG', () => {
+    // Pas `01-raw/docs/` : c'est une zone sensible, la garde refuse et le test
+    // mesurerait la garde au lieu de l'icone.
+    const p = construirePieceJointe('05-projects/cerveau/preuves/rapport.pdf', signeur);
+    expect(p.attach).toBeTruthy();
+    expect(p.icon).toBeUndefined();
+  });
+
+  it('un html ou un md n ont ni attach ni icon, seulement la page de vue', () => {
+    for (const f of ['05-projects/hero.html', '05-projects/note.md']) {
+      const p = construirePieceJointe(f, signeur);
+      expect(p.attach).toBeUndefined();
+      expect(p.icon).toBeUndefined();
+      expect(p.click).toContain('/livrable/vue');
+    }
+  });
+});
