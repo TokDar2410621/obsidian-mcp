@@ -47,6 +47,19 @@ export const RANGS: Record<string, number> = {
 /** Ce que ntfy peut AFFICHER en vignette, plutot que pousser en blob. */
 const AFFICHABLES = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf']);
 
+/**
+ * Ce que ntfy affiche DANS la notification, par le champ `icon`.
+ *
+ * Vecu le 2026-09-22 a 06h25 : la premiere livraison reelle a bien pousse
+ * `attach` + `filename` vers `card-og-image.jpg`, et Darius a repondu « c'est
+ * toujours un lien ». Le message publie sur le canal portait
+ * `card-og-image.jpg | None | None octets` : pour une piece jointe EXTERNE,
+ * ntfy ne telecharge rien, il ne connait donc ni le type ni la taille, et le
+ * client se rabat sur un lien a ouvrir. Seul `icon` fait apparaitre l'image
+ * elle-meme, et il n'accepte que JPEG et PNG (doc ntfy, verifiee).
+ */
+const ICONES = new Set(['png', 'jpg', 'jpeg']);
+
 const MIMES: Record<string, string> = {
   png: 'image/png',
   jpg: 'image/jpeg',
@@ -135,6 +148,8 @@ export function classerLivrables(livrables: string[], cheminTache: string): stri
 export interface PieceJointe {
   /** URL que ntfy va chercher pour AFFICHER la vignette. */
   attach?: string;
+  /** URL de l'image montree DANS la notification (JPEG et PNG seulement). */
+  icon?: string;
   /** Nom montre a cote de la piece jointe. */
   filename?: string;
   /** URL ouverte au tap sur le corps de la notification. */
@@ -176,9 +191,13 @@ export function construirePieceJointe(
   const lien = signeur(chemin);
   if (!lien) return { raison: 'signature-indisponible' };
 
-  const affichable = AFFICHABLES.has(extensionDe(chemin));
+  const ext = extensionDe(chemin);
+  const affichable = AFFICHABLES.has(ext);
   return {
     ...(affichable ? { attach: lien.brut, filename: nomFichier(chemin) } : {}),
+    // `icon` en plus de `attach`, jamais a la place : `attach` garde le nom du
+    // fichier et permet de l'ouvrir en grand, `icon` le MONTRE tout de suite.
+    ...(ICONES.has(ext) ? { icon: lien.brut } : {}),
     click: lien.vue,
     chemin,
   };
