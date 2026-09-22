@@ -231,7 +231,9 @@ export function taskFromDemand(demand: string): { path: string; content: string 
     'type: tache',
     'statut: proposee',
     'risque: sans-risque',
-    'source: cerveau',
+    // `revue` et non `cerveau` : c'est Darius qui a promu cette proposition,
+    // donc il attend le resultat (voir services/livraison).
+    'source: revue',
     'cible: vault',
     `created: ${date}`,
     '---',
