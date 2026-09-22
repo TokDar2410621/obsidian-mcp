@@ -10,6 +10,8 @@ import {
 } from '@/services/livraison/piece-jointe';
 import type { EtatLivraison, Voie } from '@/services/livraison/etat';
 import { aujourdhui, ecrireEtat, lireEtat } from '@/services/livraison/etat';
+import { classer } from '@/services/livraison/matiere-manquante';
+import { poserQuestion } from '@/services/livraison/question';
 import { logger } from '@/utils/logger';
 
 /**
@@ -49,6 +51,12 @@ import { logger } from '@/utils/logger';
  *    jour. Rien n'est bloque sur lui.
  *  - `validation-requise` : jamais de fermeture automatique. Si le geste
  *    valait un feu vert avant, son resultat vaut un regard apres.
+ *
+ * Le troisieme defaut repare : « impossible » n'est pas un livrable. Une tache
+ * qui echoue faute de MATIERE (lien verrouille, permission refusee, fichier
+ * absent) ne rejoint plus la file de validation : elle prend le statut
+ * `question-posee` et revient comme la question que l'executeur avait deja
+ * ecrite, repondable en une dictee. Voir matiere-manquante.ts et question.ts.
  */
 
 const TACHES_DIR = '09-taches';
@@ -72,6 +80,13 @@ const DEMANDES_DE_DARIUS = new Set(['telephone', 'chat', 'darius', 'triage', 're
 const MAX_ANNONCES = 3;
 const MAX_FERMETURES = 10;
 
+/**
+ * Questions par passage. Deux taches du coffre entier sont concernees au
+ * premier tour ; le plafond est la meme ceinture que les deux autres, pour le
+ * jour ou une serie d'executions bute sur le meme acces manquant.
+ */
+const MAX_QUESTIONS = 3;
+
 /** Au plus trois `fileExists` par annonce : chacun coute une synchro git. */
 const MAX_VERIFS = 3;
 
@@ -91,20 +106,35 @@ export interface TacheFinie {
   livrables: string[];
   /** La date `created:` du frontmatter, ou une chaine vide. */
   creee: string;
+  /**
+   * Le bloc `## Résultat` BRUT, tel que l'executeur l'a ecrit.
+   *
+   * `parseResultat` n'en garde que `resume` et `livrables` ; le classifieur de
+   * matiere manquante a besoin du reste (la ligne `criteres:` et le paragraphe
+   * « Question précise a poser a Darius »). Ne pas le retirer : c'est la
+   * matiere premiere de l'aiguillage vers la voie question.
+   */
+  resultatBrut: string;
 }
 
 /**
  * L'aiguillage, en UNE fonction nommee plutot qu'un booleen inline.
  *
- * C'est la couture laissee pour la suite : le chantier « impossible n'est pas
- * un livrable » inserera ici sa branche `question`, en PREMIERE ligne et avant
- * le test de source, sans toucher au corps des deux autres.
+ * La voie `question` passe EN PREMIER, avant le test de source, et ce n'est pas
+ * une preference de style. Mesure sur le coffre : la tache
+ * `2026-07-12-confirmer-l-tat-live-des-3-outils-gridar` porte `source: cerveau`,
+ * qui n'est pas dans DEMANDES_DE_DARIUS. Testee apres la source, une
+ * impossibilite se fermerait SILENCIEUSEMENT en `validee` : une impossibilite
+ * classee reussite, le pire des deux mondes. L'autre cas,
+ * `2026-08-31-appliquer-ca-pour-gridar-et-arivex`, porte `source: telephone` et
+ * partait en « Termine » avec pour livrable le fichier de tache lui-meme.
  *
  * Ne PAS resoudre un cas particulier en elargissant DEMANDES_DE_DARIUS a
  * `reponses`, `penseur` ou `claude` : cela contredit la regle de tri ecrite en
  * tete de fichier et casse le test qui fixe `estDemandeDeDarius('penseur')`.
  */
 export function acheminer(tache: TacheFinie): Voie {
+  if (classer(tache).bloque) return 'question';
   if (estDemandeDeDarius(tache.source) || tache.risque === 'validation-requise') return 'annoncer';
   return 'fermer';
 }
@@ -123,6 +153,7 @@ export interface LivraisonDeps {
   signeur?: Signeur | null;
   maxAnnonces?: number;
   maxFermetures?: number;
+  maxQuestions?: number;
 }
 
 export interface ResultatLivraison {
@@ -132,6 +163,8 @@ export interface ResultatLivraison {
   fermees: number;
   /** Taches inscrites SANS action au tout premier passage (amorcage). */
   amorcees: number;
+  /** Taches bloquees faute de matiere, renvoyees en question a Darius. */
+  questions: number;
 }
 
 const champ = (contenu: string, nom: string): string =>
@@ -146,6 +179,10 @@ export class LivraisonService {
 
   private get maxFermetures(): number {
     return this.deps.maxFermetures ?? MAX_FERMETURES;
+  }
+
+  private get maxQuestions(): number {
+    return this.deps.maxQuestions ?? MAX_QUESTIONS;
   }
 
   /** Le lien de repli, quand aucun livrable n'est servable. */
@@ -190,7 +227,8 @@ export class LivraisonService {
     const out: TacheFinie[] = [];
     for (const [rel, contenu] of contenus) {
       if (champ(contenu, 'statut') !== 'a-valider') continue;
-      const { resume, livrables } = parseResultat(section(contenu, 'Résultat'));
+      const blocResultat = section(contenu, 'Résultat');
+      const { resume, livrables } = parseResultat(blocResultat);
       out.push({
         path: rel,
         titre: (/^#\s+(.+)$/m.exec(contenu)?.[1] ?? rel.split('/').pop() ?? rel).trim(),
@@ -199,6 +237,7 @@ export class LivraisonService {
         resume,
         livrables,
         creee: (/^created\s*:\s*(\d{4}-\d{2}-\d{2})/m.exec(contenu)?.[1] ?? '').trim(),
+        resultatBrut: blocResultat,
       });
     }
     return out;
@@ -254,8 +293,8 @@ export class LivraisonService {
   }
 
   /**
-   * Le tout premier passage n'agit sur RIEN : il inscrit chaque tache
-   * `a-valider` deja presente, et sort.
+   * Le tout premier passage n'agit sur rien d'autre que les questions : il
+   * inscrit chaque tache `a-valider` deja presente, et sort.
    *
    * Sans cela, la mise en service partait en rafale sur tout l'historique. Et
    * surtout, elle FERMAIT silencieusement des taches anciennes dont la source
@@ -264,10 +303,44 @@ export class LivraisonService {
    * venir dispose de l'age vrai sans relire les fiches.
    */
   private amorcer(etat: EtatLivraison, finies: TacheFinie[]): number {
+    let amorcees = 0;
     for (const tache of finies) {
+      // Une tache deja traitee dans ce meme passage (une question posee) garde
+      // sa voie : l'amorce ne repasse jamais par-dessus une action reelle.
+      if (etat.traitees[tache.path]) continue;
       etat.traitees[tache.path] = { le: tache.creee, voie: 'amorce' };
+      amorcees++;
     }
-    return finies.length;
+    return amorcees;
+  }
+
+  /**
+   * Les impossibilites du premier passage, qui ne s'amorcent PAS.
+   *
+   * L'amorcage existe pour eviter une rafale d'annonces et de commits sur tout
+   * l'historique, pas pour enterrer les deux taches que ce chantier repare.
+   * Elles sont deux dans le coffre entier, sous le meme plafond que le reste :
+   * aucune rafale possible, et la question que l'executeur a ecrite le 31 aout
+   * cesse enfin de dormir.
+   */
+  private async questionsDuPremierPassage(
+    etat: EtatLivraison,
+    finies: TacheFinie[],
+  ): Promise<number> {
+    let questions = 0;
+    const le = aujourdhui();
+    for (const tache of finies) {
+      if (questions >= this.maxQuestions) break;
+      if (acheminer(tache) !== 'question') continue;
+      try {
+        await poserQuestion(this.deps, tache, classer(tache));
+        etat.traitees[tache.path] = { le, voie: 'question' };
+        questions++;
+      } catch (error) {
+        logger.warn('Livraison: question non posee', { path: tache.path, error: String(error) });
+      }
+    }
+    return questions;
   }
 
   /**
@@ -281,22 +354,25 @@ export class LivraisonService {
     const finies = await this.tachesFinies(dejaVues);
 
     if (vierge) {
+      const questions = await this.questionsDuPremierPassage(etat, finies);
       const amorcees = this.amorcer(etat, finies);
-      if (amorcees > 0) {
+      if (amorcees + questions > 0) {
         await ecrireEtat(this.deps.vault, etat);
-        logger.info('Livraison amorcee (premier passage, aucune action)', { amorcees });
+        logger.info('Livraison amorcee (premier passage)', { amorcees, questions });
       }
-      return { annoncees: 0, fermees: 0, amorcees };
+      return { annoncees: 0, fermees: 0, amorcees, questions };
     }
 
     let annoncees = 0;
     let fermees = 0;
+    let questions = 0;
     const le = aujourdhui();
 
     for (const tache of finies) {
       const voie = acheminer(tache);
       if (voie === 'annoncer' && annoncees >= this.maxAnnonces) continue;
       if (voie === 'fermer' && fermees >= this.maxFermetures) continue;
+      if (voie === 'question' && questions >= this.maxQuestions) continue;
       try {
         switch (voie) {
           case 'annoncer':
@@ -308,10 +384,11 @@ export class LivraisonService {
             fermees++;
             break;
           case 'question':
-            // Couture : tant que le chantier « matiere manquante » n'existe pas,
-            // acheminer() ne rend jamais 'question'. Une tache qui arriverait
-            // ici n'est ni traitee ni marquee vue, donc rien n'est perdu.
-            continue;
+            // « Impossible » n'est pas un livrable : la tache quitte la file
+            // de validation et revient comme une question repondable.
+            await poserQuestion(this.deps, tache, classer(tache));
+            questions++;
+            break;
         }
         etat.traitees[tache.path] = { le, voie };
       } catch (error) {
@@ -321,11 +398,11 @@ export class LivraisonService {
       }
     }
 
-    if (annoncees + fermees > 0) {
+    if (annoncees + fermees + questions > 0) {
       await ecrireEtat(this.deps.vault, etat);
-      logger.info('Livraison done', { annoncees, fermees });
+      logger.info('Livraison done', { annoncees, fermees, questions });
     }
-    return { annoncees, fermees, amorcees: 0 };
+    return { annoncees, fermees, amorcees: 0, questions };
   }
 }
 

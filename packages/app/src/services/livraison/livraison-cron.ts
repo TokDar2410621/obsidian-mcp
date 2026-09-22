@@ -50,7 +50,7 @@ export function scheduleLivraison(livraison: LivraisonService): boolean {
         pouls.marque('livraison', true);
         // `amorcees` : le tout premier passage inscrit sans agir. Il ne
         // remplit ni annoncees ni fermees, donc la condition reste juste.
-        if (r.annoncees + r.fermees > 0) logger.info('Livraison passe', { ...r });
+        if (r.annoncees + r.fermees + r.questions > 0) logger.info('Livraison passe', { ...r });
         else if (r.amorcees > 0) logger.info('Livraison amorcee', { ...r });
       })
       .catch(error => {

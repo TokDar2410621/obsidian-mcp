@@ -3,6 +3,7 @@ import type { VaultManager } from '@/services/vault-manager';
 import { readAllFiles } from '@/services/vault-manager';
 import type { ConclusionsRegistry } from '@/services/conclusions/conclusions-registry';
 import { estSensible } from '@/services/securite/zones-sensibles';
+import { STATUT_QUESTION, prefillQuestion, refTache } from '@/services/livraison/question';
 import { logger } from '@/utils/logger';
 
 /**
@@ -343,9 +344,13 @@ export async function listPendingTasks(vault: VaultManager): Promise<PendingTask
     // proposee + validation-requise: risky, awaiting approval (sans-risque runs alone).
     // echouee: dead at the chef's hands, awaiting relaunch or burial (a dead
     // task must never be invisible: the resto pilot stayed silent for a day).
+    // question-posee : bloquee faute de matiere, elle attend une REPONSE, pas
+    // un tap de validation. Elle n'est plus un livrable, mais elle reste la
+    // chose la plus coincee de la file : elle doit se voir.
     const awaits =
       statut === 'a-valider' ||
       statut === 'echouee' ||
+      statut === STATUT_QUESTION ||
       (statut === 'proposee' && risque === 'validation-requise');
     if (!awaits) continue;
     const title = (/^#\s+(.+)$/m.exec(content)?.[1] ?? base).trim();
@@ -369,7 +374,8 @@ export async function listPendingTasks(vault: VaultManager): Promise<PendingTask
   }
   // Échouées d'abord (elles sont coincées), puis le reste du plus RÉCENT au
   // plus ancien (Darius : « les nouveaux trucs sont en bas au lieu d'en haut »).
-  const rank = (t: PendingTask) => (t.statut === 'echouee' ? 0 : 1);
+  const rank = (t: PendingTask) =>
+    t.statut === 'echouee' || t.statut === STATUT_QUESTION ? 0 : 1;
   out.sort((a, b) => rank(a) - rank(b) || b.date.localeCompare(a.date));
   return out;
 }
@@ -606,6 +612,7 @@ a.btn{flex:1;text-align:center;text-decoration:none;border-radius:12px;padding:1
 a.ok{background:#16a34a}a.ok:active{background:#15803d}
 a.ko{background:#b91c1c}a.ko:active{background:#991b1b}
 a.go{background:#2563eb}a.go:active{background:#1d4ed8}
+a.btn.nav{transition:transform .08s ease}a.btn.nav:active{transform:scale(.97)}
 .empty{color:#7d8896;text-align:center;padding:24px 0}
 .note-full{display:block;white-space:pre-wrap;word-wrap:break-word;background:#0f1620;border:1px solid #1f2937;border-radius:12px;padding:16px;font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:#c7d0da;margin:8px 0}
 .back{display:inline-block;margin-top:24px;color:#3b82f6;text-decoration:none;font-size:15px}`;
@@ -621,6 +628,10 @@ document.addEventListener('click',function(e){
   var tab=e.target.closest('.tab');
   if(tab){var id=tab.getAttribute('data-panel');var ts=document.querySelectorAll('.tab');for(var i=0;i<ts.length;i++)ts[i].classList.toggle('active',ts[i]===tab);var ps=document.querySelectorAll('.panel');for(var j=0;j<ps.length;j++)ps[j].classList.toggle('active',ps[j].id==='panel-'+id);return}
   var a=e.target.closest('a.btn');if(!a)return;
+  // Un bouton de NAVIGATION ouvre une page entiere (la dictee de reponse) :
+  // il sort d'ici avant le preventDefault, sinon la carte disparait sans que
+  // rien ne s'ouvre, une panne muette qui a l'air de marcher.
+  if(a.classList.contains('nav'))return;
   e.preventDefault();
   if(a.dataset.busy)return;
   var card=a.closest('.card');
@@ -865,12 +876,15 @@ export function registerValidationRoutes(
       }
 
       const nEchec = tasks.filter(t => t.statut === 'echouee').length;
+      const nQuestion = tasks.filter(t => t.statut === STATUT_QUESTION).length;
 
       const taskCards = tasks
         .map(t => {
           const tp = encodeURIComponent(t.path);
-          const kind =
-            t.statut === 'a-valider'
+          const estQuestion = t.statut === STATUT_QUESTION;
+          const kind = estQuestion
+            ? { pill: 'warn', label: 'question posée', primary: 'Répondre', href: 'capture/app' }
+            : t.statut === 'a-valider'
               ? { pill: 'ok', label: 'à valider', primary: 'Valider', href: 'valide' }
               : t.statut === 'echouee'
                 ? { pill: 'bad', label: 'échouée', primary: 'Relancer', href: 'approuve' }
@@ -895,13 +909,22 @@ export function registerValidationRoutes(
             t.livrables.length ? `<p class="lbl">Livrables</p>${liens}` : '',
             `<a class="note" href="/note?k=${k}&t=${tp}">Ouvrir la fiche de tâche →</a>`,
           ].join('');
+          // La carte d'une question n'expose AUCUN bouton Valider : c'est
+          // exactement le geste que Darius refuse (« je dois valider pour ne
+          // plus le voir ? »). Elle propose de repondre, ou d'abandonner.
+          // La classe `nav` fait sortir « Répondre » du fetch inline : il
+          // ouvre une page entiere, la dictee prefillee de la reponse.
+          const boutons = estQuestion
+            ? `<div class="row"><a class="btn go nav" href="/capture/app?k=${k}&prefill=${encodeURIComponent(prefillQuestion(refTache(t.path)))}">Répondre</a>
+            <a class="btn ko" href="/rejette?k=${k}&t=${tp}">Abandonner</a></div>`
+            : `<div class="row"><a class="btn ${kind.pill === 'ok' ? 'ok' : 'go'}" href="/${kind.href}?k=${k}&t=${tp}">${kind.primary}</a>
+            <a class="btn ko" href="/rejette?k=${k}&t=${tp}">${t.statut === 'echouee' ? 'Abandonner' : 'Rejeter'}</a></div>`;
           return `<div class="card">
             <div class="head"><span class="pill ${kind.pill}">${kind.label}</span><span class="date">${escapeHtml(t.date)}</span></div>
             <p class="txt">${escapeHtml(t.title)}</p>
             ${summary ? `<details><summary>${escapeHtml((summary || '').slice(0, 90))}${summary.length > 90 ? '…' : ''}</summary>${detail}</details>` : `<a class="note" href="/note?k=${k}&t=${tp}">Ouvrir la note complète →</a>`}
             <input class="rz" placeholder="raison (optionnel)" maxlength="280">
-            <div class="row"><a class="btn ${kind.pill === 'ok' ? 'ok' : 'go'}" href="/${kind.href}?k=${k}&t=${tp}">${kind.primary}</a>
-            <a class="btn ko" href="/rejette?k=${k}&t=${tp}">${t.statut === 'echouee' ? 'Abandonner' : 'Rejeter'}</a></div></div>`;
+            ${boutons}</div>`;
         })
         .join('');
 
@@ -970,6 +993,7 @@ export function registerValidationRoutes(
           <ul>
             <li><b>Valider</b> garde le livrable. <b>Rejeter</b> le jette.</li>
             <li><b>Approuver</b> lance une tâche risquée. <b>Relancer</b> renvoie une tâche échouée au chef.</li>
+            <li><b>Répondre</b> sur une <b>question posée</b> : le travail est bloqué faute d'une pièce. Dicte-la, la tâche repart seule.</li>
             <li>Sur une idée : <b>Garder</b> ou <b>En tâche</b> ; pour la jeter, dis pourquoi (déjà su, hors-sujet…) : le cerveau apprend de ta raison.</li>
             <li>Touche le résumé pour le déplier, ou « Ouvrir la note complète ».</li>
           </ul>
@@ -978,6 +1002,7 @@ export function registerValidationRoutes(
       const body =
         `<h1>Revue du cerveau</h1>` +
         `<p class="sub">${tasks.length} tâche(s) et ${props.length} idée(s) t'attendent. Les plus récentes en premier.` +
+        (nQuestion > 0 ? ` <b class="fire">${nQuestion} question(s) sans réponse.</b>` : '') +
         (nEchec > 0 ? ` <b class="fire">${nEchec} échouée(s) à relancer.</b>` : '') +
         `</p>` +
         legende +

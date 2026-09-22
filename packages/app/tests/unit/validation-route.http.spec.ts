@@ -1,7 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import express from 'express';
 import type { Server } from 'node:http';
-import { parseResultat, registerValidationRoutes, section } from '@/server/local/validation-route';
+import {
+  listPendingTasks,
+  parseResultat,
+  registerValidationRoutes,
+  section,
+} from '@/server/local/validation-route';
+import { prefillQuestion, refTache } from '@/services/livraison/question';
 import type { VaultManager } from '@/services/vault-manager';
 import { configureLogger } from '@/utils/logger';
 
@@ -392,5 +398,79 @@ describe('Revue : le livrable est atteignable', () => {
     } finally {
       delete process.env.CERVEAU_MOT_DE_PASSE;
     }
+  });
+});
+
+/**
+ * La carte d'une question posee.
+ *
+ * Darius, mot pour mot : « je dois valider pour ne plus le voir ? ». La carte
+ * d'une tache bloquee faute de matiere n'offre donc AUCUN bouton Valider. Elle
+ * offre de repondre, ou d'abandonner.
+ */
+describe('/revue : une question posee se repond, elle ne se valide pas', () => {
+  const QUESTION = '09-taches/2026-08-31-appliquer.md';
+  const fiche = [
+    '---',
+    'type: tache',
+    'statut: question-posee',
+    'risque: sans-risque',
+    'source: telephone',
+    'created: 2026-08-31',
+    '---',
+    '',
+    '# Appliquer ca pour gridar et Arivex',
+    '',
+    '## Demande',
+    'Appliquer ça pour gridar et Arivex.',
+    '',
+    '## Résultat',
+    'resume: Impossible : le lien est verrouillé.',
+    'criteres: demande satisfaite=KO acces video bloque',
+    '',
+  ].join('\n');
+
+  beforeAll(() => {
+    vault.files.clear();
+    vault.files.set(QUESTION, fiche);
+  });
+
+  afterAll(() => {
+    vault.files.delete(QUESTION);
+  });
+
+  it('listPendingTasks la retient et la trie en tete', async () => {
+    const taches = await listPendingTasks(vault);
+    expect(taches.map(t => t.path)).toContain(QUESTION);
+    expect(taches[0].path).toBe(QUESTION);
+    expect(taches[0].statut).toBe('question-posee');
+  });
+
+  it('sa carte offre « Répondre » vers la dictee prefillee, et rien vers /valide', async () => {
+    const html = await (await fetch(`${base}/revue?k=${TOKEN}`)).text();
+    expect(html).toContain('question posée');
+    expect(html).toContain(`/capture/app?k=${TOKEN}&prefill=`);
+    expect(html).toContain(encodeURIComponent(prefillQuestion(refTache(QUESTION))));
+    expect(html).toContain('1 question(s) sans réponse.');
+    // Aucun chemin de validation : ni le bouton, ni le lien.
+    expect(html).not.toContain('/valide?k=');
+    expect(html).not.toContain('>Valider</a>');
+  });
+
+  it('son bouton porte la classe « nav », celle que le script inline laisse passer', async () => {
+    const html = await (await fetch(`${base}/revue?k=${TOKEN}`)).text();
+    expect(html).toContain('class="btn go nav"');
+    // La garde doit venir AVANT le preventDefault, sinon la carte disparait
+    // sans que la page de dictee s'ouvre : une panne muette.
+    const script = html.slice(html.indexOf("var a=e.target.closest('a.btn')"));
+    expect(script.indexOf("classList.contains('nav')")).toBeLessThan(
+      script.indexOf('e.preventDefault()'),
+    );
+  });
+
+  it('le secondaire abandonne, il ne rejette pas un travail qui n existe pas', async () => {
+    const html = await (await fetch(`${base}/revue?k=${TOKEN}`)).text();
+    expect(html).toContain(`/rejette?k=${TOKEN}&t=${encodeURIComponent(QUESTION)}`);
+    expect(html).toContain('>Abandonner</a>');
   });
 });

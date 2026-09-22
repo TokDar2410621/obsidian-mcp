@@ -308,6 +308,33 @@ describe('morning brief', () => {
     expect(notify.pushes[0].message).toContain('DÉPASSÉE');
   });
 
+  it('une question posee n est JAMAIS comptee comme resolution a approuver', async () => {
+    // Sans la soustraction dans morning-brief, chaque tache bloquee faute de
+    // matiere serait annoncee tous les matins comme un travail qui attend un
+    // tap, alors qu'elle attend une reponse. Invisible en test, visible
+    // seulement sur le telephone de Darius.
+    vault.files.set(
+      '09-taches/2026-08-31-appliquer.md',
+      [
+        '---',
+        'type: tache',
+        'statut: question-posee',
+        'risque: sans-risque',
+        'source: telephone',
+        'created: 2026-08-31',
+        '---',
+        '',
+        '# Appliquer ca pour gridar et Arivex',
+        '',
+      ].join('\n'),
+    );
+    await service().runBrief();
+    const msg = notify.pushes[0].message;
+    expect(msg).toContain('1 question(s) qui attendent ta réponse');
+    expect(msg).not.toContain('résolution(s) à approuver');
+    expect(msg).not.toContain('livrable(s) prêt(s)');
+  });
+
   it('stays silent when there is nothing to say', async () => {
     objectives = [];
     vault.files.delete('08-auto/_priorities.md');

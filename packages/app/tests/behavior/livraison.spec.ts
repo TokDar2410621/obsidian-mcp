@@ -7,6 +7,13 @@ import { LivraisonService, acheminer, estDemandeDeDarius } from '@/services/livr
 import { ETAT_LIVRAISON, lireEtat } from '@/services/livraison/etat';
 import type { Signeur } from '@/services/livraison/lien-signe';
 import type { Notification, NotifyPusher } from '@/services/notify/notifier';
+import { reprendreApresReponse } from '@/services/livraison/question';
+import {
+  CHEMIN_2026_07_12,
+  CHEMIN_2026_08_31,
+  FICHIER_2026_07_12,
+  FICHIER_2026_08_31,
+} from '@tests/support/fixtures/taches-bloquees.js';
 
 /**
  * Livraison : l'etape qui manquait entre « produit » et « Darius le sait ».
@@ -131,7 +138,7 @@ describe('Livraison : le passage', () => {
       '09-taches/e.md': tache({ statut: 'proposee', source: 'telephone' }),
     });
     const r = await service.run();
-    expect(r).toEqual({ annoncees: 0, fermees: 0, amorcees: 0 });
+    expect(r).toEqual({ annoncees: 0, fermees: 0, amorcees: 0, questions: 0 });
     expect(notify.pushed).toEqual([]);
   });
 
@@ -153,7 +160,7 @@ describe('Livraison : le passage', () => {
       '09-taches/j.md': tache({ source: 'triage', titre: 'Capture triee' }),
     });
     const r = await service.run();
-    expect(r).toEqual({ annoncees: 2, fermees: 2, amorcees: 0 });
+    expect(r).toEqual({ annoncees: 2, fermees: 2, amorcees: 0, questions: 0 });
     expect(notify.pushed.map(n => n.title).join(' ')).toContain('Demandee');
     expect(notify.pushed.map(n => n.title).join(' ')).toContain('Capture triee');
   });
@@ -163,7 +170,7 @@ describe('Livraison : le passage', () => {
       '09-taches/_HOWTO.md': tache({ source: 'telephone' }),
       '09-taches/_darius.md': tache({ source: 'telephone' }),
     });
-    expect(await service.run()).toEqual({ annoncees: 0, fermees: 0, amorcees: 0 });
+    expect(await service.run()).toEqual({ annoncees: 0, fermees: 0, amorcees: 0, questions: 0 });
   });
 });
 
@@ -244,7 +251,7 @@ describe("Livraison : l'amorcage, pour que la mise en service ne parte pas en ra
     const { vault, notify, service } = fabriqueSignee(fichiers);
     const r = await service.run();
 
-    expect(r).toEqual({ annoncees: 0, fermees: 0, amorcees: 5 });
+    expect(r).toEqual({ annoncees: 0, fermees: 0, amorcees: 5, questions: 0 });
     expect(notify.pushed).toEqual([]);
     for (let i = 0; i < 5; i++) {
       expect(await vault.readFile(`09-taches/t${i}.md`)).toContain('statut: a-valider');
@@ -344,12 +351,12 @@ describe('Livraison : le livrable arrive physiquement', () => {
       '09-taches/vieille.md': tacheAvec({ source: 'telephone', titre: 'Vieille' }),
     });
     const r = await service.run();
-    expect(r).toEqual({ annoncees: 0, fermees: 0, amorcees: 0 });
+    expect(r).toEqual({ annoncees: 0, fermees: 0, amorcees: 0, questions: 0 });
     expect(notify.pushed).toEqual([]);
   });
 
   it('40. acheminer est la couture : deux voies aujourd hui, nommees', () => {
-    const base = { path: 'p', titre: 't', resume: '', livrables: [], creee: '' };
+    const base = { path: 'p', titre: 't', resume: '', livrables: [], creee: '', resultatBrut: '' };
     expect(acheminer({ ...base, source: 'telephone', risque: 'sans-risque' })).toBe('annoncer');
     expect(acheminer({ ...base, source: 'cerveau', risque: 'validation-requise' })).toBe('annoncer');
     expect(acheminer({ ...base, source: 'penseur', risque: 'sans-risque' })).toBe('fermer');
@@ -390,7 +397,7 @@ describe('Livraison : le livrable arrive physiquement', () => {
       token: 'j',
     });
 
-    expect(await service.run()).toEqual({ annoncees: 0, fermees: 0, amorcees: 0 });
+    expect(await service.run()).toEqual({ annoncees: 0, fermees: 0, amorcees: 0, questions: 0 });
     const r = await service.run();
     expect(r.annoncees).toBe(1);
     expect(recus).toHaveLength(1);
@@ -413,5 +420,162 @@ describe('Livraison : le livrable arrive physiquement', () => {
     expect(n.actions?.[2].url).toContain('/revue?k=jeton');
     // Le corps de la notif, lui, ouvre le LIVRABLE.
     expect(n.click).toContain('/livrable/vue?f=');
+  });
+});
+
+// --- « impossible » n'est plus un livrable ------------------------------------
+
+/**
+ * Le troisieme defaut, verbatim de Darius : « quand je recois ca, impossible,
+ * lien verrouille, aucun contenu capte, je dois faire quoi avec ? je dois
+ * valider pour ne plus le voir ? ».
+ *
+ * Ces tests tournent sur les DEUX fiches reelles du coffre, pas sur des
+ * exemples propres. Elles sont la mesure : l'une est arrivee en notification
+ * « Termine » avec pour livrable son propre fichier de tache, l'autre se
+ * serait fermee toute seule en `validee` parce que sa source est `cerveau`.
+ */
+
+function fabriqueQuestion(fichiers: Record<string, string>, amorce = true) {
+  const vault = new InMemoryVaultManager({
+    ...(amorce ? { [ETAT_LIVRAISON]: ETAT_AMORCE } : {}),
+    ...fichiers,
+  });
+  const notify = new NotifierEspion();
+  const service = new LivraisonService({
+    vault,
+    notify,
+    baseUrl: 'https://cerveau.example',
+    token: 'jeton',
+    signeur: signeurFactice,
+  });
+  return { vault, notify, service };
+}
+
+describe('Livraison : une impossibilite revient en question, pas en livrable', () => {
+  it('44. la fiche du 31 aout n est plus annoncee comme un livrable', async () => {
+    const { notify, service } = fabriqueQuestion({
+      [CHEMIN_2026_08_31]: FICHIER_2026_08_31,
+    });
+    const r = await service.run();
+    expect(r.annoncees).toBe(0);
+    expect(r.questions).toBe(1);
+    expect(notify.pushed).toHaveLength(1);
+  });
+
+  it('45. elle prend le statut question-posee dans le coffre', async () => {
+    const { vault, service } = fabriqueQuestion({
+      [CHEMIN_2026_08_31]: FICHIER_2026_08_31,
+    });
+    await service.run();
+    expect(await vault.readFile(CHEMIN_2026_08_31)).toContain('statut: question-posee');
+    expect(await vault.readFile(CHEMIN_2026_08_31)).not.toContain('statut: a-valider');
+  });
+
+  it('46. la notification porte la question que l executeur avait deja ecrite', async () => {
+    const { notify, service } = fabriqueQuestion({
+      [CHEMIN_2026_08_31]: FICHIER_2026_08_31,
+    });
+    await service.run();
+    const n = notify.pushed[0];
+    expect(n.title).toContain('Il me manque');
+    expect(n.message).toContain('quelle est la méthode ou le format montré dans la vidéo');
+    expect(n.message).not.toContain('Le livrable est prêt');
+    expect(n.message).not.toContain('Valider garde, Rejeter jette.');
+    // Le bouton primaire ouvre la dictee, jamais /valide.
+    expect(n.click).toContain('/capture/app?k=jeton&prefill=');
+    expect(n.actions?.map(a => a.label)).not.toContain('Valider');
+  });
+
+  it('47. la fiche du 12 juillet n est PAS fermee en silence, malgre source: cerveau', async () => {
+    // Sans la voie question posee AVANT le test de source, cette tache-la
+    // devenait `validee` sans un mot : une impossibilite classee reussite.
+    const { vault, notify, service } = fabriqueQuestion({
+      [CHEMIN_2026_07_12]: FICHIER_2026_07_12,
+    });
+    const r = await service.run();
+    expect(r.fermees).toBe(0);
+    expect(r.questions).toBe(1);
+    expect(await vault.readFile(CHEMIN_2026_07_12)).toContain('statut: question-posee');
+    expect(notify.pushed[0].message).toContain("pour capturer le message d'erreur exact");
+  });
+
+  it('48. la voie question est evaluee AVANT le test de source', async () => {
+    const bloquee = {
+      path: 'p',
+      titre: 't',
+      resume: 'bloque',
+      livrables: [],
+      creee: '',
+      resultatBrut: 'criteres: demande satisfaite=KO acces bloque',
+    };
+    for (const source of ['telephone', 'cerveau', 'penseur', 'reponses', '']) {
+      expect(acheminer({ ...bloquee, source, risque: 'sans-risque' })).toBe('question');
+    }
+    // Y compris quand elle demandait une validation prealable.
+    expect(acheminer({ ...bloquee, source: 'cerveau', risque: 'validation-requise' })).toBe(
+      'question',
+    );
+  });
+
+  it('49. trois passages d affilee ne posent la question qu UNE fois', async () => {
+    const { notify, service } = fabriqueQuestion({
+      [CHEMIN_2026_08_31]: FICHIER_2026_08_31,
+    });
+    await service.run();
+    await service.run();
+    await service.run();
+    expect(notify.pushed).toHaveLength(1);
+  });
+
+  it('50. une tache saine reste annoncee comme avant', async () => {
+    const { vault, notify, service } = fabriqueQuestion({
+      '09-taches/saine.md': tacheAvec({ source: 'telephone', titre: 'Saine' }),
+      '05-projects/x/hero.png': 'octets',
+    });
+    const r = await service.run();
+    expect(r).toEqual({ annoncees: 1, fermees: 0, amorcees: 0, questions: 0 });
+    expect(notify.pushed[0].title).toContain('✅ Terminé');
+    expect(await vault.readFile('09-taches/saine.md')).toContain('statut: a-valider');
+  });
+
+  it('51. le tout premier passage amorce le reste, mais POSE les questions', async () => {
+    // L'amorcage existe pour eviter une rafale sur l'historique, pas pour
+    // enterrer les deux impossibilites que ce chantier repare.
+    const { vault, notify, service } = fabriqueQuestion(
+      {
+        [CHEMIN_2026_08_31]: FICHIER_2026_08_31,
+        [CHEMIN_2026_07_12]: FICHIER_2026_07_12,
+        '09-taches/saine.md': tacheAvec({ source: 'telephone', titre: 'Saine' }),
+      },
+      false,
+    );
+    const r = await service.run();
+    expect(r.questions).toBe(2);
+    expect(r.annoncees).toBe(0);
+    expect(r.fermees).toBe(0);
+    expect(r.amorcees).toBe(1);
+    expect(notify.pushed).toHaveLength(2);
+    expect(await vault.readFile('09-taches/saine.md')).toContain('statut: a-valider');
+    const etat = await lireEtat(vault);
+    expect(etat.traitees[CHEMIN_2026_08_31].voie).toBe('question');
+    expect(etat.traitees['09-taches/saine.md'].voie).toBe('amorce');
+  });
+
+  it('52. la reponse de Darius rattache la piece et relance la tache', async () => {
+    const { vault, service } = fabriqueQuestion({
+      [CHEMIN_2026_08_31]: FICHIER_2026_08_31,
+    });
+    await service.run();
+    const ok = await reprendreApresReponse(
+      vault,
+      CHEMIN_2026_08_31,
+      'la video montre un calendrier de questions client',
+    );
+    expect(ok).toBe(true);
+    const fiche = await vault.readFile(CHEMIN_2026_08_31);
+    expect(fiche).toContain('statut: proposee');
+    const demande = fiche.slice(fiche.indexOf('## Demande'), fiche.indexOf('## Critères'));
+    expect(demande).toContain('la video montre un calendrier de questions client');
   });
 });
