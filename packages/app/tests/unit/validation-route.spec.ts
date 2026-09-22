@@ -138,12 +138,14 @@ describe('flipTaskStatus', () => {
 });
 
 describe('taskFromDemand', () => {
+  // `revue` et non `cerveau` : promouvoir une proposition est une decision de
+  // Darius, donc il attend le resultat (services/livraison notifie les siennes).
   it('builds a proposee sans-risque task with a slugged path', () => {
     const { path, content } = taskFromDemand('Donne suite a cet insight : Gridar');
     expect(path).toMatch(/^09-taches\/\d{4}-\d{2}-\d{2}-.*\.md$/);
     expect(content).toContain('statut: proposee');
     expect(content).toContain('risque: sans-risque');
-    expect(content).toContain('source: cerveau');
+    expect(content).toContain('source: revue');
   });
 });
 

@@ -64,6 +64,8 @@ import { PoussoirService } from '@/services/poussoir/poussoir';
 import { RetoursService } from '@/services/retours/retours';
 import { scheduleRetours } from '@/services/retours/retours-cron';
 import { schedulePoussoir } from '@/services/poussoir/poussoir-cron';
+import { LivraisonService } from '@/services/livraison/livraison';
+import { scheduleLivraison } from '@/services/livraison/livraison-cron';
 import { createMemoryStrength } from '@/services/memory/memory-strength';
 import { createConclusionsRegistry } from '@/services/conclusions/conclusions-registry';
 import { createBucketStore } from '@/services/storage/bucket-store';
@@ -292,6 +294,18 @@ const poussoirService = new PoussoirService({
   token: process.env.CAPTURE_TOKEN || null,
 });
 
+// Livraison : ce qui vient d'etre fini part chez Darius (s'il l'a demande) ou
+// se ferme seul (initiative du cerveau, controlee CONFORME). L'etape qui
+// manquait : le balayage de relance n'annonce que ce qui STAGNE depuis un jour
+// et seulement le plus ancien, donc une tache reussie en 18 minutes n'etait
+// jamais annoncee.
+const livraisonService = new LivraisonService({
+  vault: vaultManager,
+  notify: notifier,
+  baseUrl: BASE_URL,
+  token: process.env.CAPTURE_TOKEN || null,
+});
+
 // Optional object-storage tools (put-file / get-file) backed by an S3-compatible
 // bucket (e.g. a Railway Bucket). Null unless the bucket env vars are set — keeps
 // binaries (images, PDFs) out of the git vault. Independent of RAG/Anthropic.
@@ -509,6 +523,7 @@ Configure ChatGPT/Claude with:
       }
     });
   schedulePoussoir(poussoirService);
+  scheduleLivraison(livraisonService);
   scheduleRetours(retoursService);
 
   scheduleStripeProbe(stripeProbe);
