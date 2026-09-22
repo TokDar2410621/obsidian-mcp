@@ -44,6 +44,19 @@ export const RANGS: Record<string, number> = {
   patch: 4,
 };
 
+/**
+ * Prefixe d'une cle du bucket dans une ligne `livrables:`.
+ *
+ * La route `/livrable` sait rediriger une telle cle vers un lien presigne
+ * (livrable-route.ts), mais `cheminServable` refusait tout chemin contenant
+ * deux-points, pose pour bloquer les lecteurs Windows (`C:`) et les flux NTFS.
+ * La branche bucket de la route etait donc du code mort, inatteignable depuis
+ * son seul appelant. Constate le 2026-09-22 : les visuels rendus sur PC2 ne
+ * vivent QUE dans le bucket, jamais dans git, donc aucun d'eux ne pouvait
+ * arriver sur le telephone de Darius.
+ */
+export const PREFIXE_BUCKET = 'bucket:';
+
 /** Ce que ntfy peut AFFICHER en vignette, plutot que pousser en blob. */
 const AFFICHABLES = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf']);
 
@@ -111,6 +124,15 @@ export function typeMime(chemin: string): string {
 export function cheminServable(chemin: string): boolean {
   const p = normaliser(chemin);
   if (!p) return false;
+  // Une cle de bucket est servable : la route la redirige vers un lien
+  // presigne. Reconnue AVANT le refus des deux-points, qui ne vise que les
+  // lecteurs Windows et les flux NTFS.
+  if (p.startsWith(PREFIXE_BUCKET)) {
+    const cle = p.slice(PREFIXE_BUCKET.length);
+    if (!cle || cle.includes(':') || cle.includes('..') || cle.startsWith('/')) return false;
+    if (!(extensionDe(cle) in RANGS)) return false;
+    return !estSensible(cle);
+  }
   if (/^[a-zA-Z]:/.test(p)) return false;
   if (p.startsWith('/') || p.startsWith('~')) return false;
   if (p.includes(':')) return false;
