@@ -169,3 +169,40 @@ describe('Piece jointe : une image se MONTRE, elle ne se telecharge pas', () => 
     }
   });
 });
+
+/**
+ * Les visuels rendus sur PC2 ne vivent QUE dans le bucket, jamais dans git.
+ * Tant que `cheminServable` refusait les deux-points sans exception, aucune
+ * cle `bucket:` n etait signee, et la branche du bucket de /livrable restait
+ * du code mort. Darius, 2026-09-22 : « est-ce que je vais recevoir ces liens
+ * dans le ntfy ? genre les liens du bucket ? » La reponse etait non.
+ */
+describe('Piece jointe : une cle de bucket est servable', () => {
+  const signeur = (chemin: string) => ({
+    brut: `https://x.test/livrable?f=${encodeURIComponent(chemin)}&e=9&s=sig`,
+    vue: `https://x.test/livrable/vue?f=${encodeURIComponent(chemin)}&e=9&s=sig`,
+  });
+
+  it('une image du bucket est acceptee, signee, et porte son icone', () => {
+    const cle = 'bucket:01-raw/fichiers/2026-09-22-0625-seo-aeo-geo-demo.png';
+    expect(cheminServable(cle)).toBe(true);
+    const p = construirePieceJointe(cle, signeur);
+    expect(p.attach).toContain('bucket%3A');
+    expect(p.icon).toBe(p.attach);
+    expect(p.raison).toBeUndefined();
+  });
+
+  it('un lecteur Windows reste refuse : le deux-points garde son role', () => {
+    expect(cheminServable('C:/Users/Darius/secret.png')).toBe(false);
+    expect(cheminServable('bucket:C:/ailleurs.png')).toBe(false);
+  });
+
+  it('une zone sensible reste refusee MEME dans le bucket', () => {
+    expect(cheminServable('bucket:00-personnel/carte.png')).toBe(false);
+    expect(cheminServable('bucket:01-raw/docs/passeport.png')).toBe(false);
+  });
+
+  it('une traversee de chemin reste refusee', () => {
+    expect(cheminServable('bucket:../../etc/passwd.png')).toBe(false);
+  });
+});

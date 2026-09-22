@@ -5,6 +5,7 @@ import type { BucketStore } from '@/services/storage/bucket-store';
 import { contentDispositionFor } from '@/services/storage/bucket-store';
 import { secretLivrable, ttlSecondes, verifier } from '@/services/livraison/lien-signe';
 import {
+  PREFIXE_BUCKET,
   RANGS,
   cheminServable,
   extensionDe,
@@ -33,7 +34,8 @@ import { logger } from '@/utils/logger';
  * apres coup ferme ainsi les liens deja emis.
  */
 
-const PREFIXE_BUCKET = 'bucket:';
+// Le prefixe vit desormais dans piece-jointe.ts, qui decide AUSSI si une cle
+// de bucket est servable : une seule definition, pas deux qui derivent.
 
 const escapeHtml = (s: string): string =>
   s
