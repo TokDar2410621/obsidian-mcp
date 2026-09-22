@@ -3,6 +3,7 @@ import type { NotifyPusher } from '@/services/notify/notifier';
 import type { ObjectiveNote } from '@/services/objectives/objective-sweep';
 import type { ConclusionsRegistry } from '@/services/conclusions/conclusions-registry';
 import { collectDailyPropositions, cleanText, listPendingTasks } from '@/server/local/validation-route';
+import { STATUT_QUESTION } from '@/services/livraison/question';
 import { logger } from '@/utils/logger';
 
 /**
@@ -353,8 +354,15 @@ export class MorningBriefService {
       const tasks = await listPendingTasks(vault);
       const livrables = tasks.filter(t => t.statut === 'a-valider').length;
       const echouees = tasks.filter(t => t.statut === 'echouee').length;
-      const resolutions = tasks.length - livrables - echouees;
+      // Une question posee n'est PAS une resolution a approuver. Sans cette
+      // soustraction, chaque tache bloquee faute de matiere serait comptee tous
+      // les matins comme un travail qui attend un tap, alors qu'elle attend une
+      // reponse. Le defaut serait invisible en test et visible seulement sur le
+      // telephone de Darius.
+      const questions = tasks.filter(t => t.statut === STATUT_QUESTION).length;
+      const resolutions = tasks.length - livrables - echouees - questions;
       const parts: string[] = [];
+      if (questions > 0) parts.push(`${questions} question(s) qui attendent ta réponse`);
       if (livrables > 0) parts.push(`${livrables} livrable(s) prêt(s) à valider`);
       if (resolutions > 0) parts.push(`${resolutions} résolution(s) à approuver`);
       if (echouees > 0) parts.push(`${echouees} tâche(s) échouée(s) à relancer`);

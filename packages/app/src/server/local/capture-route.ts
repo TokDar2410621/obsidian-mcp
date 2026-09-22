@@ -3,6 +3,7 @@ import type { Express, Request, Response } from 'express';
 import type { VaultManager } from '@/services/vault-manager';
 import type { BucketStore } from '@/services/storage/bucket-store';
 import { recordAnswer, consumeAnswer, markAnswered } from '@/services/relance/relance-sweep';
+import { extraireRef, reprendreApresReponse, resoudreRef } from '@/services/livraison/question';
 import { logger } from '@/utils/logger';
 
 /** Minimal HTML-escape for the one-tap confirmation page. */
@@ -388,12 +389,39 @@ export function registerCaptureRoute(
       return;
     }
 
-    // "pk: ..." is Darius answering a relance in his own words (voice capture).
+    // "pk: ..." is Darius answering, in his own words (voice capture).
+    //
+    // Une reponse pouvait ne rien debloquer : `recordAnswer(..., 'capture', ...)`
+    // ecrivait la chaine litterale « capture » dans le champ fichier, donc la
+    // ligne de `09-taches/_reponses.md` ne disait jamais QUELLE tache la
+    // reponse debloque (verifie dans le coffre : « [reponse-libre] je n'ai pas
+    // la piece d'identite de mon garant a jour (capture) »).
+    //
+    // Le bouton « Répondre » d'une question posee prefille donc le texte avec
+    // la reference de la tache, `pk: [t:<ref>] `. On la ressort ici : la
+    // reponse se rattache a la tache, entre dans sa `## Demande` et la remet en
+    // `proposee`. Sans reference, le comportement d'avant est intact.
     const pk = /^pk\s*:\s*(.+)$/is.exec(text);
     if (pk) {
+      const brut = pk[1].replace(/\s+/g, ' ').trim();
+      const { ref, texte } = extraireRef(brut);
       try {
-        await recordAnswer(vault, pk[1].replace(/\s+/g, ' ').trim(), 'capture', 'reponse-libre');
-        res.status(200).json({ ok: true, file: `${TACHES_DIR}/_reponses.md`, reponse: true });
+        let cible = 'capture';
+        let repris = false;
+        if (ref) {
+          const chemin = await resoudreRef(vault, ref);
+          if (chemin) {
+            cible = chemin;
+            repris = await reprendreApresReponse(vault, chemin, texte);
+          }
+        }
+        await recordAnswer(vault, texte, cible, repris ? 'reponse-a-question' : 'reponse-libre');
+        res.status(200).json({
+          ok: true,
+          file: `${TACHES_DIR}/_reponses.md`,
+          reponse: true,
+          ...(repris ? { repris: cible } : {}),
+        });
       } catch (error) {
         logger.error('Capture pk failed', { error: String(error) });
         res.status(500).json({ error: 'write failed' });

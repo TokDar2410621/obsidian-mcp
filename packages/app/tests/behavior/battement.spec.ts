@@ -42,6 +42,7 @@ function poulsSain(): Record<string, { t: string; ok: boolean; note?: string }> 
     'sweep-objectifs',
     'sweep-captures',
     'relance',
+    'peremption',
     'sonde-stripe',
     'sonde-calendar',
     'synapses-digest',
@@ -298,6 +299,44 @@ describe('Battement de coeur : crons serveur', () => {
     const stripe = r.lignes.find(l => l.composant === 'Sonde Stripe');
     expect(stripe?.verdict).toBe('dormant');
     expect(r.problemes.find(p => p.composant === 'Sonde Stripe')).toBeUndefined();
+  });
+
+  it('crie quand le balayage de péremption est muet', async () => {
+    // Un cron quotidien qui meurt en silence est exactement la panne que la
+    // peremption existe pour empecher : elle doit etre surveillee comme les
+    // autres, sans quoi la file recommence a pourrir sans que personne ne le
+    // sache.
+    const pouls = poulsSain();
+    delete pouls['peremption'];
+    // Le pouls vit depuis 72 h : la grace de demarrage est passee, « aucune
+    // marque » veut bien dire « n'a jamais tourne ».
+    const fichiers = battementsSains();
+    fichiers['08-auto/_sante-state.json'] = JSON.stringify({
+      version: 1,
+      premierEveil: iso(72),
+      actifs: {},
+    });
+    const { battement } = fabrique({ fichiers, pouls });
+    const r = await battement.battre();
+    expect(r.problemes.find(p => p.composant === 'Péremption des livrables')?.verdict).toBe('muet');
+  });
+
+  it('ne crie pas sur la péremption quand LIVRAISON_PEREMPTION=off', async () => {
+    const pouls = poulsSain();
+    delete pouls['peremption'];
+    const fichiers = battementsSains();
+    fichiers['08-auto/_sante-state.json'] = JSON.stringify({
+      version: 1,
+      premierEveil: iso(72),
+      actifs: {},
+    });
+    const { battement } = fabrique({
+      fichiers,
+      pouls,
+      env: { ...ENV_COMPLET, LIVRAISON_PEREMPTION: 'off' },
+    });
+    const r = await battement.battre();
+    expect(r.problemes.find(p => p.composant === 'Péremption des livrables')).toBeUndefined();
   });
 
   it('une marque en échec crie avec la note', async () => {

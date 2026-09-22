@@ -65,7 +65,11 @@ import { RetoursService } from '@/services/retours/retours';
 import { scheduleRetours } from '@/services/retours/retours-cron';
 import { schedulePoussoir } from '@/services/poussoir/poussoir-cron';
 import { LivraisonService } from '@/services/livraison/livraison';
+import { creerSigneur } from '@/services/livraison/lien-signe';
+import { registerLivrableRoute } from '@/server/local/livrable-route';
 import { scheduleLivraison } from '@/services/livraison/livraison-cron';
+import { PeremptionService } from '@/services/livraison/peremption';
+import { schedulePeremption } from '@/services/livraison/peremption-cron';
 import { createMemoryStrength } from '@/services/memory/memory-strength';
 import { createConclusionsRegistry } from '@/services/conclusions/conclusions-registry';
 import { createBucketStore } from '@/services/storage/bucket-store';
@@ -304,6 +308,25 @@ const livraisonService = new LivraisonService({
   notify: notifier,
   baseUrl: BASE_URL,
   token: process.env.CAPTURE_TOKEN || null,
+  // Le livrable lui-meme, pas son chemin : un lien signe a duree limitee que
+  // ntfy va chercher pour AFFICHER l'image. Null sans secret de signature, et
+  // le service retombe alors sur son lien /revue.
+  signeur: creerSigneur(BASE_URL),
+  maxAnnonces: Number(process.env.LIVRAISON_MAX_ANNONCES) || undefined,
+  maxFermetures: Number(process.env.LIVRAISON_MAX_FERMETURES) || undefined,
+});
+
+// Peremption : un livrable non ouvert ne dort plus eternellement dans la file.
+// Le defaut repare, mesure le 2026-09-21 : la tache du 12 juillet « Rediger le
+// message pret-a-envoyer au garant » attendait encore sa validation, le besoin
+// etait regle depuis des semaines, et le balayage de relance l'annoncait tous
+// les soirs parce qu'il ne pousse que la plus ancienne des 82. Elle recoit
+// maintenant UNE question a deux boutons, et le silence finit par l'archiver.
+const peremptionService = new PeremptionService({
+  vault: vaultManager,
+  notify: notifier,
+  baseUrl: BASE_URL,
+  token: process.env.CAPTURE_TOKEN || null,
 });
 
 // Optional object-storage tools (put-file / get-file) backed by an S3-compatible
@@ -355,6 +378,11 @@ registerCaptureRoute(app, vaultManager, bucketStore ?? undefined);
 // the notif buttons flip a task's statut; /revue triages the 08-auto proposals.
 // Every tap feeds the conclusions registry (metacognition).
 registerValidationRoutes(app, vaultManager, conclusionsRegistry);
+
+// Le dernier metre : GET /livrable sert les OCTETS d'un livrable et
+// /livrable/vue le montre. Gardees par la signature du lien, jamais par le
+// CAPTURE_TOKEN. Non montees sans LIVRABLE_SECRET ni CAPTURE_TOKEN.
+registerLivrableRoute(app, vaultManager, bucketStore);
 
 // Workers' HTTP heartbeat: their voice when the git clone is frozen.
 registerTelemetryRoute(app);
@@ -524,6 +552,7 @@ Configure ChatGPT/Claude with:
     });
   schedulePoussoir(poussoirService);
   scheduleLivraison(livraisonService);
+  schedulePeremption(peremptionService);
   scheduleRetours(retoursService);
 
   scheduleStripeProbe(stripeProbe);

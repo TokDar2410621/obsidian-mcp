@@ -128,3 +128,56 @@ describe('NtfyNotifier', () => {
     delete process.env.NTFY_TOPIC;
   });
 });
+
+// --- la piece jointe : la notification porte le FICHIER, pas son chemin -------
+
+describe('NtfyNotifier : la pièce jointe', () => {
+  it('44. attach, filename et icon ne partent que quand ils sont définis', async () => {
+    const sent: Sent[] = [];
+    const notifier = new NtfyNotifier('https://ntfy.sh', 't', null, fakeFetch(sent));
+
+    await notifier.push({
+      title: 'Terminé',
+      message: 'Le hero est prêt.',
+      attach: 'https://cerveau.example/livrable?f=hero.png&e=9&s=sig',
+      filename: 'hero.png',
+      icon: 'https://cerveau.example/livrable?f=icone.png&e=9&s=sig',
+    });
+    await notifier.push({ title: 'sans-piece', message: 'rien' });
+
+    expect(sent[0].body.attach).toContain('/livrable?f=hero.png');
+    expect(sent[0].body.filename).toBe('hero.png');
+    expect(sent[0].body.icon).toContain('/livrable?f=icone.png');
+    expect(sent[1].body.attach).toBeUndefined();
+    expect(sent[1].body.filename).toBeUndefined();
+    expect(sent[1].body.icon).toBeUndefined();
+  });
+
+  it('45. le journal du coffre NOMME le fichier livré', async () => {
+    // Sinon déplacer le livrable dans `attach` effacerait sa seule trace :
+    // ntfy ne garde que ~12 h, ce fichier-là est la mémoire.
+    const files = new Map<string, string>();
+    const vault = {
+      readFile: async (p: string) => {
+        const c = files.get(p);
+        if (c === undefined) throw new Error('ENOENT');
+        return c;
+      },
+      writeFile: async (p: string, c: string) => void files.set(p, c),
+    } as unknown as VaultManager;
+    const sent: Sent[] = [];
+    const notifier = new NtfyNotifier('https://ntfy.sh', 't', null, fakeFetch(sent));
+    notifier.setJournal(createNotificationJournal(vault));
+
+    await notifier.push({
+      title: 'Terminé : affiche LinkedIn',
+      message: 'Refaite en Pillow, 2 bugs corrigés.',
+      attach: 'https://cerveau.example/livrable?f=affiche.png&e=9&s=sig',
+      filename: 'affiche-linkedin.png',
+    });
+
+    const journal = files.get('08-auto/_notifications.md') ?? '';
+    expect(journal).toContain('affiche-linkedin.png');
+    expect(journal).toContain('📎');
+  });
+});

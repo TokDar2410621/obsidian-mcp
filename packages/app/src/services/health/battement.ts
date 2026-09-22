@@ -94,6 +94,12 @@ const CRONS: Array<{
   { nom: 'sweep-captures', label: 'Sweep captures', cadenceH: 30, dormantSiOff: 'CAPTURE_LINK' },
   { nom: 'relance', label: 'Relance', cadenceH: 30, dormantSiOff: 'RELANCE_SWEEP' },
   {
+    nom: 'peremption',
+    label: 'Péremption des livrables',
+    cadenceH: 30,
+    dormantSiOff: 'LIVRAISON_PEREMPTION',
+  },
+  {
     nom: 'sonde-stripe',
     label: 'Sonde Stripe',
     cadenceH: 26,

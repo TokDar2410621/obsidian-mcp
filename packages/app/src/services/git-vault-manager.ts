@@ -270,6 +270,28 @@ export class GitVaultManager implements VaultManager {
   }
 
   /**
+   * Read a file's RAW BYTES. Same lock, same lazy overlay as readFile: what a
+   * livrable route serves must never be a file caught mid `git reset --hard`.
+   *
+   * A pending lazy write is text by construction, so it comes back as utf8.
+   */
+  async readBinaryFile(relativePath: string): Promise<Buffer> {
+    relativePath = toVaultRelativePath(relativePath);
+    const pending = this.lazyPending.get(relativePath);
+    if (pending !== undefined) return Buffer.from(pending, 'utf8');
+    return this.runExclusive(async () => {
+      await this.initialize();
+      const fullPath = path.join(this.config.vaultPath, relativePath);
+
+      try {
+        return await fs.readFile(fullPath);
+      } catch (error: any) {
+        throw new Error(`Failed to read file ${relativePath}: ${error.message}`);
+      }
+    });
+  }
+
+  /**
    * Read MANY files in one exclusive operation: a single sync (fetch + reset),
    * then plain disk reads. The per-file readFile path costs one full git sync
    * EACH (serialized): search-vault reading ~900 notes that way took minutes

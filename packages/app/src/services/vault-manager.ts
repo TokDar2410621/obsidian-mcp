@@ -83,6 +83,16 @@ export interface VaultManager {
    * {@link readAllFiles}. Unreadable files are silently skipped.
    */
   readManyFiles?(relativePaths: string[]): Promise<Map<string, string>>;
+  /**
+   * Optional: RAW BYTES (images, PDF). Implemented by GitVaultManager; fakes
+   * fall back to a utf8 Buffer of readFile via {@link readBinary}.
+   *
+   * Optional on purpose: eleven classes implement VaultManager (the git one,
+   * the in-memory double, and nine FakeVault under tests/unit). A REQUIRED
+   * method would break `tsc --noEmit` in ten files, exactly like
+   * readManyFiles? and writeFileLazy? before it.
+   */
+  readBinaryFile?(relativePath: string): Promise<Buffer>;
   readFile(relativePath: string): Promise<string>;
   writeFile(relativePath: string, content: string): Promise<void>;
   deleteFile(relativePath: string): Promise<void>;
@@ -114,6 +124,24 @@ export function writeStateFile(
 ): Promise<void> {
   if (vault.writeFileLazy) return vault.writeFileLazy(relativePath, content);
   return vault.writeFile(relativePath, content);
+}
+
+
+/**
+ * Read raw bytes with graceful fallback. Real vaults read the file as-is (a
+ * PNG stays a PNG); fakes return a utf8 Buffer of their text content, which is
+ * enough for every test double and keeps the interface method optional.
+ *
+ * Never read the disk directly instead of this: GitVaultManager serializes its
+ * reads behind the same lock as `git reset --hard`, and a raw fs.readFile on
+ * the vault path would happily serve a half-synced file.
+ */
+export async function readBinary(
+  vault: VaultManager,
+  relativePath: string,
+): Promise<Buffer> {
+  if (vault.readBinaryFile) return vault.readBinaryFile(relativePath);
+  return Buffer.from(await vault.readFile(relativePath), 'utf8');
 }
 
 
