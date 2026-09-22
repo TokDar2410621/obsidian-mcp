@@ -32,9 +32,30 @@ export interface EntreeEtat {
   voie: VoieEnregistree;
 }
 
+/**
+ * La marque de peremption d'un livrable, posee par le balayage quotidien et par
+ * la route /encore. Deux dates, jamais plus :
+ *
+ *  - `demandeeLe` : le jour ou la question « encore utile ? » est partie. Elle
+ *    VERROUILLE la question : tant qu'elle est la, elle ne se repose pas. C'est
+ *    la regle du coffre `blocage-demander-pourquoi` appliquee a la sortie.
+ *  - `utileLe` : le jour ou Darius a repondu « encore utile ». Le compteur
+ *    repart de la, pas de la date du livrable, et `demandeeLe` disparait.
+ */
+export interface MarquePeremption {
+  demandeeLe?: string;
+  utileLe?: string;
+}
+
 export interface EtatLivraison {
   version: 1;
   traitees: Record<string, EntreeEtat>;
+  /**
+   * Les marques de peremption, par chemin de tache. Optionnel : un etat ecrit
+   * par la version d'avant n'en a pas, et son absence ne vaut pas « rien a
+   * peremer », elle vaut « jamais balaye ».
+   */
+  peremption?: Record<string, MarquePeremption>;
 }
 
 export const ETAT_LIVRAISON = '08-auto/_livraison-state.json';
@@ -67,13 +88,16 @@ export async function lireEtat(vault: VaultManager): Promise<EtatLivraison> {
   } catch {
     return vide;
   }
+  const marques = lireMarques((brut as { peremption?: unknown })?.peremption);
+  const avecMarques = (etat: EtatLivraison): EtatLivraison =>
+    marques ? { ...etat, peremption: marques } : etat;
   const traitees = (brut as { traitees?: unknown })?.traitees;
   if (Array.isArray(traitees)) {
     const out: Record<string, EntreeEtat> = {};
     for (const t of traitees) {
       if (typeof t === 'string' && t) out[t] = { le: '', voie: 'fermer' };
     }
-    return { version: 1, traitees: out };
+    return avecMarques({ version: 1, traitees: out });
   }
   if (traitees && typeof traitees === 'object') {
     const out: Record<string, EntreeEtat> = {};
@@ -83,9 +107,24 @@ export async function lireEtat(vault: VaultManager): Promise<EtatLivraison> {
       const voie = VOIES.has(v?.voie as VoieEnregistree) ? (v.voie as VoieEnregistree) : 'fermer';
       out[chemin] = { le: typeof v?.le === 'string' ? v.le : '', voie };
     }
-    return { version: 1, traitees: out };
+    return avecMarques({ version: 1, traitees: out });
   }
-  return vide;
+  return avecMarques(vide);
+}
+
+/** Les marques relues du disque, ou null quand il n'y en a aucune de valide. */
+function lireMarques(brut: unknown): Record<string, MarquePeremption> | null {
+  if (!brut || typeof brut !== 'object' || Array.isArray(brut)) return null;
+  const out: Record<string, MarquePeremption> = {};
+  for (const [chemin, valeur] of Object.entries(brut as Record<string, unknown>)) {
+    if (!chemin || !valeur || typeof valeur !== 'object') continue;
+    const v = valeur as { demandeeLe?: unknown; utileLe?: unknown };
+    const marque: MarquePeremption = {};
+    if (typeof v.demandeeLe === 'string' && v.demandeeLe) marque.demandeeLe = v.demandeeLe;
+    if (typeof v.utileLe === 'string' && v.utileLe) marque.utileLe = v.utileLe;
+    if (marque.demandeeLe || marque.utileLe) out[chemin] = marque;
+  }
+  return Object.keys(out).length ? out : null;
 }
 
 /**
@@ -97,10 +136,49 @@ export async function lireEtat(vault: VaultManager): Promise<EtatLivraison> {
  * numeriques, donc leur ordre d'insertion est garanti par le langage.
  */
 export async function ecrireEtat(vault: VaultManager, etat: EtatLivraison): Promise<void> {
+  // Relecture-modification-ecriture, et non pas ecriture directe de
+  // l'instantane. Ce fichier a DEUX ecrivains : le passage de livraison toutes
+  // les cinq minutes, et la peremption (balayage du soir plus la route
+  // /encore). Un passage de livraison qui reecrirait `{version, traitees}` a
+  // partir de l'etat lu en debut de tour effacerait les marques posees entre
+  // temps, la question de peremption repartirait chaque jour, et le defaut
+  // reparaitrait a l'identique.
+  await majEtat(vault, frais => {
+    frais.traitees = etat.traitees;
+  });
+}
+
+/**
+ * Le SEUL chemin d'ecriture de ce fichier : il RELIT l'etat juste avant
+ * d'ecrire, applique la mutation, et serialise l'objet ENTIER. Les champs que
+ * l'appelant ne connait pas (les marques de peremption pour la livraison, les
+ * `traitees` pour la peremption) survivent sans qu'il ait a les porter.
+ *
+ * La fenetre de course n'est pas nulle pour autant : deux mutations qui se
+ * chevauchent a la seconde pres peuvent encore se marcher dessus. Elle est
+ * reduite a la duree de la mutation elle-meme, et les deux services vivent dans
+ * le meme processus, donc dans la meme boucle d'evenements.
+ */
+export async function majEtat(
+  vault: VaultManager,
+  muter: (etat: EtatLivraison) => void,
+): Promise<EtatLivraison> {
+  const etat = await lireEtat(vault);
+  muter(etat);
   const entrees = Object.entries(etat.traitees).slice(-MAX_TRAITEES);
+  const marques = etat.peremption ?? {};
   await writeStateFile(
     vault,
     ETAT_LIVRAISON,
-    JSON.stringify({ version: 1, traitees: Object.fromEntries(entrees) }, null, 2),
+    JSON.stringify(
+      {
+        version: 1,
+        traitees: Object.fromEntries(entrees),
+        ...(Object.keys(marques).length ? { peremption: marques } : {}),
+      },
+      null,
+      2,
+    ),
   );
+  return etat;
 }

@@ -68,6 +68,8 @@ import { LivraisonService } from '@/services/livraison/livraison';
 import { creerSigneur } from '@/services/livraison/lien-signe';
 import { registerLivrableRoute } from '@/server/local/livrable-route';
 import { scheduleLivraison } from '@/services/livraison/livraison-cron';
+import { PeremptionService } from '@/services/livraison/peremption';
+import { schedulePeremption } from '@/services/livraison/peremption-cron';
 import { createMemoryStrength } from '@/services/memory/memory-strength';
 import { createConclusionsRegistry } from '@/services/conclusions/conclusions-registry';
 import { createBucketStore } from '@/services/storage/bucket-store';
@@ -314,6 +316,19 @@ const livraisonService = new LivraisonService({
   maxFermetures: Number(process.env.LIVRAISON_MAX_FERMETURES) || undefined,
 });
 
+// Peremption : un livrable non ouvert ne dort plus eternellement dans la file.
+// Le defaut repare, mesure le 2026-09-21 : la tache du 12 juillet « Rediger le
+// message pret-a-envoyer au garant » attendait encore sa validation, le besoin
+// etait regle depuis des semaines, et le balayage de relance l'annoncait tous
+// les soirs parce qu'il ne pousse que la plus ancienne des 82. Elle recoit
+// maintenant UNE question a deux boutons, et le silence finit par l'archiver.
+const peremptionService = new PeremptionService({
+  vault: vaultManager,
+  notify: notifier,
+  baseUrl: BASE_URL,
+  token: process.env.CAPTURE_TOKEN || null,
+});
+
 // Optional object-storage tools (put-file / get-file) backed by an S3-compatible
 // bucket (e.g. a Railway Bucket). Null unless the bucket env vars are set — keeps
 // binaries (images, PDFs) out of the git vault. Independent of RAG/Anthropic.
@@ -537,6 +552,7 @@ Configure ChatGPT/Claude with:
     });
   schedulePoussoir(poussoirService);
   scheduleLivraison(livraisonService);
+  schedulePeremption(peremptionService);
   scheduleRetours(retoursService);
 
   scheduleStripeProbe(stripeProbe);

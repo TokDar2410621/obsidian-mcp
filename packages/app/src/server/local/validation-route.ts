@@ -4,6 +4,13 @@ import { readAllFiles } from '@/services/vault-manager';
 import type { ConclusionsRegistry } from '@/services/conclusions/conclusions-registry';
 import { estSensible } from '@/services/securite/zones-sensibles';
 import { STATUT_QUESTION, prefillQuestion, refTache } from '@/services/livraison/question';
+import {
+  archiver,
+  estAValider,
+  joursPeremption,
+  ligneJournal,
+  marquerEncoreUtile,
+} from '@/services/livraison/peremption';
 import { logger } from '@/utils/logger';
 
 /**
@@ -1020,6 +1027,97 @@ export function registerValidationRoutes(
     }
   });
 
-  logger.info('Validation routes registered (/valide, /rejette, /approuve, /revue, /prop, /note)');
+  /**
+   * La sortie de file d'un livrable perime, en un tap.
+   *
+   * Le defaut repare : une tache du 12 juillet attendait encore sa validation
+   * en septembre, alors que le besoin etait regle depuis des semaines, et le
+   * balayage de relance l'annoncait tous les soirs parce qu'il ne pousse que la
+   * plus ancienne. Un livrable qui dort doit pouvoir SORTIR, pas seulement etre
+   * rappele. Voir services/livraison/peremption.ts.
+   *
+   * AUCUNE conclusion n'est enregistree au registre : « plus utile maintenant »
+   * n'est pas « ce sujet est faux ». Un `remember(..., 'rejete')` ferait taire
+   * de futures propositions voisines, sur la foi d'un menage.
+   */
+  app.get('/archive', async (req: Request, res: Response) => {
+    if (!gate(req, res)) return;
+    const t = String(req.query.t ?? '');
+    if (!validTaskPath(t)) {
+      res.status(400).type('text/plain').send('bad task path');
+      return;
+    }
+    try {
+      if (!(await vault.fileExists(t))) {
+        res.type('text/html').send(confirm('Introuvable', 'Cette tâche n’existe plus.', token));
+        return;
+      }
+      const content = await vault.readFile(t);
+      const next = archiver(content, ligneJournal('reponse', '', day()));
+      // Plus `a-valider` : Darius a deja tranché ailleurs. On ne réécrit RIEN.
+      if (next === null) {
+        res
+          .type('text/html')
+          .send(confirm('Déjà traitée', 'Ce livrable n’est plus en attente.', token));
+        return;
+      }
+      await vault.writeFile(t, next);
+      logger.info('Livrable archived', { task: t });
+      res
+        .type('text/html')
+        .send(
+          confirm('Archivée', 'Ce livrable quitte la file. La fiche reste dans le coffre.', token),
+        );
+    } catch (error) {
+      logger.error('Archive failed', { error: String(error), task: t });
+      res.status(500).type('text/plain').send('write failed');
+    }
+  });
+
+  /**
+   * « Encore utile » : le compteur repart de CE jour, pas de la date du
+   * livrable, et la question ne revient pas avant le seuil. La marque vit dans
+   * l'etat de livraison ; la ligne de journal n'est que documentaire.
+   */
+  app.get('/encore', async (req: Request, res: Response) => {
+    if (!gate(req, res)) return;
+    const t = String(req.query.t ?? '');
+    if (!validTaskPath(t)) {
+      res.status(400).type('text/plain').send('bad task path');
+      return;
+    }
+    try {
+      if (!(await vault.fileExists(t))) {
+        res.type('text/html').send(confirm('Introuvable', 'Cette tâche n’existe plus.', token));
+        return;
+      }
+      const content = await vault.readFile(t);
+      // Meme juge que /revue et que le balayage : la PREMIERE ligne `statut:`.
+      if (!estAValider(content)) {
+        res
+          .type('text/html')
+          .send(confirm('Déjà traitée', 'Ce livrable n’est plus en attente.', token));
+        return;
+      }
+      const jours = joursPeremption();
+      await marquerEncoreUtile(vault, t, day());
+      await appendTaskNote(
+        vault,
+        t,
+        `[peremption ${day()}] Encore utile : la question ne reviendra pas avant ${jours} jours.`,
+      );
+      logger.info('Livrable gardé', { task: t, jours });
+      res
+        .type('text/html')
+        .send(confirm('Gardé', `La question ne reviendra pas avant ${jours} jours.`, token));
+    } catch (error) {
+      logger.error('Encore failed', { error: String(error), task: t });
+      res.status(500).type('text/plain').send('write failed');
+    }
+  });
+
+  logger.info(
+    'Validation routes registered (/valide, /rejette, /approuve, /revue, /prop, /note, /archive, /encore)',
+  );
   return true;
 }
