@@ -4,7 +4,8 @@ Runbook de la spec « Cerveau invité et skills intégrés » (vault : `05-proje
 
 ## Ce qui existe
 
-- **Dan** (`dist/guest/index.js`) : une instance en lecture seule du cerveau, pour les amis. Même image Docker que l'instance perso, lancée quand `GUEST_MODE=true`. Aucun cron, aucune notif, aucune écriture. Les zones `00-personnel/`, `04-people/`, `01-raw/docs/`, `01-raw/admin/` et `Personnes/` y sont invisibles, et un chemin caché se comporte exactement comme un chemin absent.
+- **Dan** (`dist/guest/index.js`) : une instance en lecture seule du cerveau, pour les amis. Même image Docker que l'instance perso, lancée quand `GUEST_MODE=true`. Aucun cron, aucune notif, aucune écriture. Les zones `00-personnel/`, `04-people/`, `01-raw/docs/`, `01-raw/admin/` et `Personnes/` y sont invisibles, comme tout chemin dont un segment commence par un point (`.git/`, `.obsidian/`) et tout ce qui n'est pas une note `.md` (journaux techniques, JSON, PDF). Un chemin caché se comporte exactement comme un chemin absent : même message, même coût.
+- **OAuth de Dan** : un code n'est renvoyé qu'au rappel de claude.ai (`https://claude.ai/api/mcp/auth_callback`, ou claude.com) et à la boucle locale de Claude Code ; PKCE S256 obligatoire. `GUEST_REDIRECT_URIS` ajoute des adresses exactes si un autre client doit se brancher.
 - **Codes d'accès par ami**, révocables un par un (CLI `invites`), quota quotidien, journal d'audit.
 - **find-skill / read-skill** sur les deux instances, sur un catalogue curé écrit dans `09-skills/`.
 - **Profil neutre** (`CERVEAU_PROFIL=neutre`) pour le cerveau d'un ami.
@@ -58,6 +59,7 @@ Dans le projet Railway `gracious-joy`, à côté de `obsidian-mcp` :
 | `GUEST_LLM_MODEL` | un modèle économique, capacités vérifiées avant (règle `verifier-capacites-avant-migration-modele`) |
 | `GUEST_QUOTA_JOUR` | `100` |
 | `GUEST_SERVER_NAME` | `Dan` |
+| `GUEST_REDIRECT_URIS` | facultatif : redirect_uri exactes en plus de claude.ai et de la boucle locale |
 | `GITHUB_WEBHOOK_SECRET` | nouveau secret |
 
 À NE PAS poser sur Dan : `CERVEAU_JETON_LOCAL`, `PERSONAL_AUTH_TOKEN`, `CERVEAU_MOT_DE_PASSE`, `NTFY_TOPIC`, `CAPTURE_TOKEN`, `CERVEAU_API_TOKEN`, `STRIPE_API_KEY`, `GOOGLE_OAUTH_*`, les variables du bucket. Dan ignore le jeton local et le jeton personnel même s'ils sont posés, et le dit dans ses logs.
