@@ -36,8 +36,10 @@ const ZONES_DEFAUT = ['00-personnel/', '04-people/', '01-raw/docs/', '01-raw/adm
  *   - apres l'audit du coffre reel (Q14, Q15) : `Journal/` et `03-daily/`
  *     (recit personnel mele au savoir : le savoir en sort par distillation
  *     validee, jamais par ouverture du journal), `01-raw/` (captures brutes,
- *     numeros de documents d'immigration), `09-taches/` et `09-archive/`
- *     (taches et reponses passees).
+ *     numeros de documents d'immigration), `09-taches/` (taches et reponses).
+ *   - Q16 : `09-archive/` HERITE de la visibilite du dossier d'origine (voir
+ *     ARCHIVE). Une ancienne note de projet reste du savoir de projet ; une
+ *     tache ou une capture archivee reste cachee comme son dossier d'origine.
  */
 const ZONES_INVITE = [
   ...ZONES_DEFAUT,
@@ -46,8 +48,16 @@ const ZONES_INVITE = [
   '03-daily/',
   '01-raw/',
   '09-taches/',
-  '09-archive/',
 ];
+
+/**
+ * L'archive range une note sous `09-archive/<chemin d'origine>`. Chez Dan,
+ * une note archivee est cachee si son chemin d'origine l'est :
+ * `09-archive/00-personnel/x.md` reste cache, `09-archive/05-projects/x.md`
+ * redevient visible (avec masquage). Un dossier archive demain herite de la
+ * meme regle sans liste a tenir.
+ */
+const ARCHIVE = '09-archive/';
 
 /**
  * Instance invitee (Dan) : lecture seule, aucun deverrouillage, filtrage
@@ -123,9 +133,18 @@ export function estSensible(chemin: string): boolean {
   // L'instance perso garde la comparaison exacte qu'elle a toujours eue.
   const invite = estModeInvite();
   const p = invite ? brut.toLowerCase() : brut;
+  const cibles = [p];
+  // Dan : une note archivee est jugee aussi sur son chemin d'origine (Q16).
+  if (invite) {
+    let reste = p;
+    while (reste.startsWith(ARCHIVE)) {
+      reste = reste.slice(ARCHIVE.length);
+      cibles.push(reste);
+    }
+  }
   return zones().some(zone => {
     const z = invite ? zone.toLowerCase() : zone;
-    return p.startsWith(z) || `${p}/` === z;
+    return cibles.some(c => c.length > 0 && (c.startsWith(z) || `${c}/` === z));
   });
 }
 

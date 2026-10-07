@@ -58,6 +58,12 @@ function coffre(): InMemoryVaultManager {
     '09-archive/09-taches/vieille.md': `# Vieille tâche\n\n${RECIT}\n`,
     '05-projects/prospects/liste.md': `# Prospects\n\nContact : ${COURRIEL}, ${TELEPHONE}. Besoin : un site qui charge vite.\n`,
     '02-knowledge/vente/prospection.md': '# Prospection\n\nProspecter le matin, relancer à J+3.\n',
+    '09-archive/05-projects/ancien/offre.md': `# Ancienne offre\n\nForfait mensuel ancré sur le risque. Contact : ${COURRIEL}.\n`,
+    '09-archive/08-auto/proposition.md': '# Proposition archivée\n\nGeler la chasse quand le score est nul.\n',
+    '09-archive/00-personnel/papiers.md': `# Papiers\n\n${RECIT}\n`,
+    '09-archive/01-raw/capture.md': `# Capture\n\n${RECIT}\n`,
+    '09-archive/Journal/2026-06-01.md': `# Journal\n\n${RECIT}\n`,
+    '09-archive/04-people/proche.md': `# Proche\n\n${RECIT}\n`,
   });
 }
 
@@ -161,6 +167,39 @@ describe('Q14 : coordonnees et numeros masques dans ce qui reste visible', () =>
       expect(p).not.toContain(TELEPHONE);
     }
     expect(app.rag!.embeddedChunks.some(c => c.text.includes(COURRIEL))).toBe(false);
+  });
+});
+
+describe('Q16 : l archive herite de la visibilite de son dossier d origine', () => {
+  it('une ancienne note de projet ou de 08-auto est visible, et masquee', async () => {
+    const { app, token } = await monter();
+    const projet = await appel(app, token, 'read-note', { path: '09-archive/05-projects/ancien/offre.md' });
+    expect(projet.result.structuredContent.content).toContain('Forfait mensuel');
+    expect(projet.corps).not.toContain(COURRIEL);
+    const prop = await appel(app, token, 'read-note', { path: '09-archive/08-auto/proposition.md' });
+    expect(prop.result.structuredContent.content).toContain('Geler la chasse');
+  });
+
+  it.each([
+    '09-archive/09-taches/vieille.md',
+    '09-archive/00-personnel/papiers.md',
+    '09-archive/01-raw/capture.md',
+    '09-archive/Journal/2026-06-01.md',
+    '09-archive/04-people/proche.md',
+    '09-archive/09-archive/00-personnel/papiers.md',
+  ])('%s reste cache comme son dossier d origine', async chemin => {
+    const { app, token } = await monter();
+    const r = await appel(app, token, 'read-note', { path: chemin });
+    expect(r.result.content[0].text).toBe(messageIntrouvable(chemin));
+  });
+
+  it('rien de l archive personnelle dans le listing, la recherche ou l index', async () => {
+    const { app, token } = await monter();
+    const liste = await appel(app, token, 'list-files-in-vault', {});
+    expect(liste.corps).toContain('09-archive/05-projects/ancien/offre.md');
+    expect(liste.corps).not.toMatch(/09-archive\/(00-personnel|01-raw|Journal|04-people|09-taches)/);
+    expect((await appel(app, token, 'search-cerveau', { query: RECIT })).corps).not.toContain(RECIT);
+    expect(app.rag!.embeddedChunks.some(c => c.text.includes(RECIT))).toBe(false);
   });
 });
 
