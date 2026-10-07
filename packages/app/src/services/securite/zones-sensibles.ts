@@ -26,6 +26,22 @@ import { logger } from '@/utils/logger';
 
 const ZONES_DEFAUT = ['00-personnel/', '04-people/', '01-raw/docs/', '01-raw/admin/'];
 
+/**
+ * Zones que Dan (l'instance invitee) ne montre JAMAIS, quel que soit
+ * CERVEAU_ZONES_SENSIBLES : decision de Darius du 2026-10-07 (spec « Cerveau
+ * invite et skills integres »). La variable d'env AJOUTE des zones, elle n'en
+ * retire aucune : oublier de la poser ne doit jamais ouvrir le coffre.
+ */
+const ZONES_INVITE = [...ZONES_DEFAUT, 'Personnes/'];
+
+/**
+ * Instance invitee (Dan) : lecture seule, aucun deverrouillage, filtrage
+ * permanent. Lu a chaque appel pour que les tests puissent basculer.
+ */
+export function estModeInvite(): boolean {
+  return (process.env.GUEST_MODE ?? '').trim().toLowerCase() === 'true';
+}
+
 /** Outils qui SORTENT de l'information du coffre. */
 const OUTILS_LECTURE = new Set([
   'read-note',
@@ -40,13 +56,19 @@ const OUTILS_LECTURE = new Set([
 /** Outils qui DETRUISENT. */
 const OUTILS_SUPPRESSION = new Set(['delete-note', 'delete-file']);
 
-function zones(): string[] {
+function zonesEnv(): string[] {
   const brut = process.env.CERVEAU_ZONES_SENSIBLES;
-  if (!brut?.trim()) return ZONES_DEFAUT;
+  if (!brut?.trim()) return [];
   return brut
     .split(',')
     .map(z => z.trim())
     .filter(Boolean);
+}
+
+function zones(): string[] {
+  if (estModeInvite()) return [...new Set([...ZONES_INVITE, ...zonesEnv()])];
+  const env = zonesEnv();
+  return env.length > 0 ? env : ZONES_DEFAUT;
 }
 
 function fenetreMs(): number {
@@ -54,10 +76,19 @@ function fenetreMs(): number {
   return (Number.isFinite(m) && m > 0 ? m : 30) * 60 * 1000;
 }
 
-/** Chemin dans une zone sensible ? Compare sur des separateurs normalises. */
+/**
+ * Chemin dans une zone sensible ? Compare sur des separateurs normalises.
+ * Le dossier lui-meme compte aussi (`Personnes` sans slash final, tel que le
+ * rend un listing de repertoires) : sinon son nom fuirait par une liste.
+ */
 export function estSensible(chemin: string): boolean {
-  const p = (chemin || '').replace(/\\/g, '/').replace(/^\.?\//, '');
-  return zones().some(z => p.startsWith(z));
+  const p = (chemin || '')
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter(s => s.length > 0 && s !== '.')
+    .join('/');
+  if (!p) return false;
+  return zones().some(z => p.startsWith(z) || `${p}/` === z);
 }
 
 // --- la fenetre de deverrouillage ------------------------------------------
@@ -83,6 +114,8 @@ export function verrouiller(): void {
  * renseignerait un attaquant sur l'etat du systeme.
  */
 export function deverrouiller(motDePasse: string): boolean {
+  // Dan n'ouvre jamais ses zones, meme avec le bon mot de passe.
+  if (estModeInvite()) return false;
   const attendu = process.env.CERVEAU_MOT_DE_PASSE?.trim();
   if (!attendu || !motDePasse) return false;
   const a = Buffer.from(attendu);
@@ -162,6 +195,13 @@ export function filtrerResultats<T>(
   resultats: T[],
   cheminDe: (r: T) => string,
 ): { gardes: T[]; masques: number } {
+  if (estModeInvite()) {
+    // Ni mot de passe, ni fenetre, ni jeton de confiance : le filtre mord
+    // toujours. L'index invite ne contient deja aucune zone cachee ; ceci est
+    // la seconde ceinture si un index perso etait charge par erreur.
+    const gardes = resultats.filter(r => !estSensible(cheminDe(r)));
+    return { gardes, masques: resultats.length - gardes.length };
+  }
   if (!process.env.CERVEAU_MOT_DE_PASSE?.trim()) return { gardes: resultats, masques: 0 };
   if (appelant().deConfiance || fenetreOuverte()) return { gardes: resultats, masques: 0 };
   const gardes = resultats.filter(r => !estSensible(cheminDe(r)));

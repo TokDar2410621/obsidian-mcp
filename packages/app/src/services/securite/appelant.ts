@@ -22,7 +22,9 @@ export interface ContexteAppelant {
   /** Vrai quand le porteur est le jeton local : Claude Code, workers, crons. */
   deConfiance: boolean;
   /** Etiquette pour les journaux : jamais le jeton lui-meme. */
-  origine: 'local' | 'claude.ai';
+  origine: 'local' | 'claude.ai' | 'invite';
+  /** L'ami derriere l'appel, sur l'instance invitee (Dan) seulement. */
+  invite?: { id: string; nom: string };
 }
 
 const stockage = new AsyncLocalStorage<ContexteAppelant>();
