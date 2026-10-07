@@ -93,6 +93,16 @@ export interface VaultManager {
    * readManyFiles? and writeFileLazy? before it.
    */
   readBinaryFile?(relativePath: string): Promise<Buffer>;
+  /**
+   * Optional: replace a whole folder in ONE commit (files written, files not
+   * listed deleted). Used by the skills catalog sync: a hundred notes written
+   * one MCP call at a time would be a hundred commits racing the PC2 workers.
+   */
+  remplacerDossier?(
+    dossier: string,
+    fichiers: Array<{ chemin: string; contenu: string }>,
+    options: { message: string },
+  ): Promise<{ ecrits: number; supprimes: number }>;
   readFile(relativePath: string): Promise<string>;
   writeFile(relativePath: string, content: string): Promise<void>;
   deleteFile(relativePath: string): Promise<void>;

@@ -3,6 +3,8 @@ export interface SessionData {
   authenticated: boolean;
   createdAt: number;
   expiresAt: number;
+  /** L'ami authentifie sur l'instance invitee (Dan). Absent sur l'instance perso. */
+  inviteId?: string;
   pendingAuthRequest?: {
     clientId: string;
     redirectUri: string;
@@ -19,6 +21,7 @@ export interface AuthCodeData {
   redirectUri: string;
   createdAt: number;
   expiresAt: number;
+  inviteId?: string;
 }
 
 export interface AccessTokenData {
@@ -27,11 +30,18 @@ export interface AccessTokenData {
   createdAt: number;
   expiresAt: number;
   scope: string;
+  /**
+   * Ami porteur du token (instance invitee). L'instance perso refuse tout
+   * token qui en porte un, l'instance invitee tout token qui n'en porte pas :
+   * meme avec un store partage par erreur, aucun token ne vaut des deux cotes.
+   */
+  inviteId?: string;
 }
 
 export interface RefreshTokenData {
   refreshToken: string;
   accessToken: string;
+  inviteId?: string;
 }
 
 export interface SessionRepository {

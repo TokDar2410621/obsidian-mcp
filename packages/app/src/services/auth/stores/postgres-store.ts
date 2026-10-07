@@ -118,7 +118,11 @@ export class PostgresAuthStore implements AuthStore {
     await this.upsert(
       'refresh_token',
       data.refreshToken,
-      { refreshToken: data.refreshToken, accessToken: data.token },
+      {
+        refreshToken: data.refreshToken,
+        accessToken: data.token,
+        ...(data.inviteId ? { inviteId: data.inviteId } : {}),
+      },
       null,
     );
   }

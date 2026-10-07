@@ -71,6 +71,7 @@ export class InMemoryAuthStore implements AuthStore {
     this.refreshTokens.set(data.refreshToken, {
       refreshToken: data.refreshToken,
       accessToken: data.token,
+      ...(data.inviteId ? { inviteId: data.inviteId } : {}),
     });
     await this.onChange();
   }

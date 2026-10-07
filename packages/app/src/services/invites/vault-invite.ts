@@ -24,7 +24,7 @@ export function messageIntrouvable(chemin: string): string {
 }
 
 export const MESSAGE_LECTURE_SEULE =
-  "Dan est en lecture seule : aucune ecriture, suppression ni deplacement n'est possible.";
+  "Dan est en lecture seule : aucune écriture, suppression ni déplacement n'est possible.";
 
 export class VaultInvite implements VaultManager {
   constructor(private readonly interne: VaultManager) {}

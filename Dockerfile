@@ -27,6 +27,10 @@ RUN npm ci --workspace @obsidian-mcp/app --include-workspace-root --no-audit --n
 # donc node recoit le SIGTERM directement et applique l'arret gracieux.
 RUN npm run build:http --workspace @obsidian-mcp/app
 
+# Dan, l'instance invitee en lecture seule (GUEST_MODE=true), et la CLI qui
+# gere ses amis. Meme image : seul le point d'entree change (voir CMD).
+RUN npm run build:guest --workspace @obsidian-mcp/app  && npm run build:invites --workspace @obsidian-mcp/app
+
 ENV LOCAL_VAULT_PATH=/app/vaults/vault-local
 RUN mkdir -p /app/vaults
 
@@ -39,6 +43,7 @@ RUN mkdir -p /app/index
 
 EXPOSE 3000
 
-# Démarre le serveur HTTP (OAuth) via node directement (PID 1, gère SIGTERM).
-# Il lit automatiquement le PORT fourni par Railway.
-CMD ["node", "packages/app/dist/http/index.js"]
+# Démarre le serveur HTTP (OAuth) via node directement (PID 1 grâce à exec,
+# gère SIGTERM). Il lit automatiquement le PORT fourni par Railway.
+# GUEST_MODE=true lance Dan (lecture seule, aucun cron) au lieu du serveur perso.
+CMD ["sh", "-c", "if [ \"$GUEST_MODE\" = \"true\" ]; then exec node packages/app/dist/guest/index.js; else exec node packages/app/dist/http/index.js; fi"]

@@ -6,7 +6,9 @@ export {
   consumePendingAuthRequest,
   isAuthenticated,
   destroySession,
+  verifierJetonPersonnel,
   type Session,
+  type VerificateurConnexion,
 } from './session-manager.js';
 
 export {
@@ -15,7 +17,9 @@ export {
   refreshAccessToken,
   clearRefreshGrace,
   validateAccessToken,
+  getValidAccessToken,
   revokeToken,
+  type AccepterRafraichissement,
   validateClientCredentials,
 } from './oauth-tokens.js';
 

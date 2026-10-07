@@ -148,7 +148,12 @@ export function registerGithubWebhook(
   graph?: GraphService | null,
   sweep?: ObjectiveSweepService | null,
   captureLink?: CaptureLinkSweepService | null,
-  organs?: { vault?: VaultManager | null; reflection?: ReflectionService | null },
+  organs?: {
+    vault?: VaultManager | null;
+    reflection?: ReflectionService | null;
+    /** Index annexes a rafraichir a chaque push (catalogue de skills). */
+    rafraichirEnPlus?: (() => Promise<unknown>) | null;
+  },
 ): boolean {
   const secret = process.env.GITHUB_WEBHOOK_SECRET;
   if (!secret) {
@@ -182,8 +187,16 @@ export function registerGithubWebhook(
       });
       rag
         .refresh()
-        .then(result => {
+        .then(async result => {
           logger.info('RAG reindex (webhook) complete', result);
+          if (organs?.rafraichirEnPlus) {
+            await organs
+              .rafraichirEnPlus()
+              .then(() => logger.info('Index annexes (webhook) a jour'))
+              .catch(error =>
+                logger.error('Index annexes (webhook) en echec', { error: String(error) }),
+              );
+          }
           // Deterministic objective sweep on the fresh index: every new/changed
           // note is confronted with the open objectives' unmet conditions
           // (propose-only, dedup'd — a no-op push converges immediately).

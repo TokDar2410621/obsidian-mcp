@@ -4,7 +4,7 @@
  * MCP endpoint handlers used by both local and Lambda HTTP servers
  */
 
-import { Express, Request, Response, NextFunction } from 'express';
+import { Express, Request, Response, NextFunction, RequestHandler } from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import * as auth from '@/services/auth';
@@ -36,7 +36,10 @@ async function authenticateToken(req: Request, res: Response, next: NextFunction
     return;
   }
 
-  if (!(await auth.validateAccessToken(token))) {
+  // Un token emis pour un ami (instance invitee, Dan) ne vaut jamais ici,
+  // meme si les deux instances partageaient un store par erreur.
+  const donnees = await auth.getValidAccessToken(token);
+  if (!donnees || donnees.inviteId) {
     res.status(401).json({
       error: 'invalid_token',
       error_description: 'Access token is invalid or expired',
@@ -55,7 +58,11 @@ async function authenticateToken(req: Request, res: Response, next: NextFunction
  * @param app - Express application
  * @param mcpServer - MCP server instance
  */
-export function registerMcpRoute(app: Express, mcpServer: McpServer): void {
+export function registerMcpRoute(
+  app: Express,
+  mcpServer: McpServer,
+  authentifier: RequestHandler = authenticateToken,
+): void {
   app.get('/health', (_req, res) => {
     res.json({
       status: 'ok',
@@ -121,5 +128,5 @@ export function registerMcpRoute(app: Express, mcpServer: McpServer): void {
     }
   };
 
-  app.post('/mcp', authenticateToken, mcpHandler);
+  app.post('/mcp', authentifier, mcpHandler);
 }

@@ -9,10 +9,12 @@
     "npm": ">=10.0.0"
   },
   "scripts": {
-    "build": "tsc -b && npm run build:stdio --workspace @obsidian-mcp/app && npm run build:http --workspace @obsidian-mcp/app && npm run build:lambda --workspace @obsidian-mcp/app",
+    "build": "tsc -b && npm run build:stdio --workspace @obsidian-mcp/app && npm run build:http --workspace @obsidian-mcp/app && npm run build:guest --workspace @obsidian-mcp/app && npm run build:invites --workspace @obsidian-mcp/app && npm run build:lambda --workspace @obsidian-mcp/app",
     "build:lambda": "esbuild src/server/lambda/index.ts --bundle --platform=node --target=node22 --format=cjs --tsconfig=tsconfig.json --outfile=dist/lambda/index.js",
     "build:stdio": "esbuild src/server/local/stdio.ts --bundle --platform=node --target=node22 --format=esm --tsconfig=tsconfig.json --packages=external --outfile=dist/stdio/index.js",
     "build:http": "esbuild src/server/local/http.ts --bundle --platform=node --target=node22 --format=esm --tsconfig=tsconfig.json --packages=external --outfile=dist/http/index.js",
+    "build:guest": "esbuild src/server/local/guest-http.ts --bundle --platform=node --target=node22 --format=esm --tsconfig=tsconfig.json --packages=external --outfile=dist/guest/index.js",
+    "build:invites": "esbuild src/cli/invites.ts --bundle --platform=node --target=node22 --format=esm --tsconfig=tsconfig.json --packages=external --outfile=dist/invites/index.js",
     "dev": "tsx src/server/local/stdio.ts",
     "dev:http": "tsx src/server/local/http.ts",
     "clean": "rm -rf dist",
