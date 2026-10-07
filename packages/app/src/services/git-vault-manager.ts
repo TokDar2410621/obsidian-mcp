@@ -384,6 +384,51 @@ export class GitVaultManager implements VaultManager {
     });
   }
 
+  /**
+   * Remplace tout un dossier en UN commit : ecrit les fichiers donnes,
+   * supprime ceux du dossier qui n'y figurent plus. Sert a la synchro du
+   * catalogue de skills (09-skills/) : cent notes ecrites une par une, c'est
+   * cent commits qui courent contre les pushes des workers PC2 (la tempete
+   * mesuree le 2026-07-12). Tout chemin hors du dossier est refuse.
+   */
+  async remplacerDossier(
+    dossier: string,
+    fichiers: Array<{ chemin: string; contenu: string }>,
+    options: { message: string },
+  ): Promise<{ ecrits: number; supprimes: number }> {
+    const base = toVaultRelativePath(dossier);
+    const entrees = fichiers.map(f => ({ rel: toVaultRelativePath(f.chemin), contenu: f.contenu }));
+    for (const e of entrees) {
+      if (!e.rel.startsWith(`${base}/`)) {
+        throw new Error(`Chemin hors du dossier ${base}/ refuse : ${e.rel}`);
+      }
+    }
+    return this.runExclusive(async () => {
+      await this.initialize();
+      const racine = path.join(this.config.vaultPath, base);
+      const existants: string[] = [];
+      if (existsSync(racine)) {
+        await this.walkDirectory(racine, this.config.vaultPath, existants, { recursive: true });
+      }
+      const voulus = new Set(entrees.map(e => e.rel));
+      let supprimes = 0;
+      for (const rel of existants.map(p => p.split(path.sep).join('/'))) {
+        if (voulus.has(rel)) continue;
+        await fs.unlink(path.join(this.config.vaultPath, rel));
+        supprimes++;
+      }
+      for (const e of entrees) {
+        const complet = path.join(this.config.vaultPath, e.rel);
+        await fs.mkdir(path.dirname(complet), { recursive: true });
+        this.lazyPending.delete(e.rel);
+        await fs.writeFile(complet, stripEmDash(e.rel, e.contenu), 'utf-8');
+      }
+      await this.commitAndPush(options.message, [base]);
+      logger.info('Dossier remplace en un commit', { dossier: base, ecrits: entrees.length, supprimes });
+      return { ecrits: entrees.length, supprimes };
+    });
+  }
+
   private static readonly LAZY_FLUSH_MS = Number(process.env.STATE_FLUSH_MS || 5 * 60 * 1000);
   private static readonly LAZY_MAX_PENDING = 8;
 

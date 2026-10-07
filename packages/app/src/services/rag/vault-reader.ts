@@ -3,8 +3,13 @@ import type { VaultManager } from '@/services/vault-manager';
 import type { VaultReader } from '@/services/rag/types';
 import { extractText } from '@/services/rag/extract-text';
 
-/** Folders we never index (templates, generated graphs, app config). */
-const EXCLUDED_PREFIXES = ['_templates/', '99-graphify-out/', '.obsidian/', '.git/'];
+/**
+ * Folders we never index (templates, generated graphs, app config).
+ * `09-skills/` has its OWN index (services/skills): a hundred third-party
+ * skills in the general index would drown Darius's notes in his own searches
+ * (spec « Cerveau invité et skills intégrés », §2.4).
+ */
+const EXCLUDED_PREFIXES = ['_templates/', '99-graphify-out/', '.obsidian/', '.git/', '09-skills/'];
 
 /** File types fed to the index: Markdown notes + PDFs (parsed to text). */
 const INDEXABLE_TYPES = ['md', 'pdf'];

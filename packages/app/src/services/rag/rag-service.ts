@@ -17,7 +17,7 @@ import type {
   VaultReader,
 } from '@/services/rag/types';
 import type { ToolResponse } from '@/mcp/handlers/types';
-import { filtrerResultats } from '@/services/securite/zones-sensibles';
+import { estModeInvite, estSensible, filtrerResultats } from '@/services/securite/zones-sensibles';
 
 const INDEX_VERSION = 1;
 const DEFAULT_TOP_K = 8;
@@ -161,6 +161,14 @@ export class RagService {
 
   /** Read-only view of the in-memory embedded chunks (consumed by Synapses). */
   get embeddedChunks(): readonly EmbeddedChunk[] {
+    // Dan : le graphe et les synapses lisent ces extraits SANS passer par
+    // retrieve(). Une zone ajoutee apres l'indexation (CERVEAU_ZONES_SENSIBLES)
+    // ne doit pas attendre la prochaine reindexation pour disparaitre.
+    if (estModeInvite()) {
+      return this.chunks.filter(
+        c => !estSensible(c.file) && !c.file.split('/').some(s => s.startsWith('.')),
+      );
+    }
     return this.chunks;
   }
 
@@ -302,7 +310,10 @@ export class RagService {
   async searchCerveau(args: SearchArgs): Promise<ToolResponse> {
     try {
       await this.ensureReady();
-      const { hits, masques } = await this.retrieve(args.query, args);
+      const { hits, masques: masquesBruts } = await this.retrieve(args.query, args);
+      // Dan (instance invitee) ne compte jamais ce qu'il cache : un compteur
+      // dirait a l'ami qu'une note existe la ou il ne doit rien voir.
+      const masques = estModeInvite() ? 0 : masquesBruts;
       // A search is also a recall: reinforce the traces of what surfaced
       // (humans consolidate what they retrieve, not only what they cite).
       try {
@@ -344,7 +355,8 @@ export class RagService {
       // s'activait jamais et le modèle brodait sur des extraits hors sujet.
       // hit.score est le cosinus dense pur (0..1), comparable d'une question
       // à l'autre.
-      const { hits: bruts, masques } = await this.retrieve(args.question, args);
+      const { hits: bruts, masques: masquesBruts } = await this.retrieve(args.question, args);
+      const masques = estModeInvite() ? 0 : masquesBruts;
       const hits = filtrerPertinents(bruts);
       if (hits.length === 0) {
         return ok({

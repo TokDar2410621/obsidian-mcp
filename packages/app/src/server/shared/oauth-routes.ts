@@ -19,6 +19,25 @@ export interface OAuthConfig {
    * here so a dead connector is a push, never a silent surprise.
    */
   onRefreshFailure?: () => void;
+  /**
+   * Qui peut se connecter. Defaut : PERSONAL_AUTH_TOKEN (instance perso).
+   * L'instance invitee (Dan) passe la verification des secrets d'amis.
+   */
+  verifierConnexion?: auth.VerificateurConnexion;
+  /** Instance invitee : refuse le refresh d'un ami revoque. */
+  accepterRafraichissement?: auth.AccepterRafraichissement;
+  /** Textes de la page de connexion (instance invitee : en francais, « Dan »). */
+  pageConnexion?: pages.TextesConnexion;
+  /**
+   * Instance invitee : seules ces redirect_uri recoivent un code. Sans liste
+   * blanche, n'importe qui pouvait envoyer a un ami un lien d'autorisation qui
+   * renvoie le code vers son propre site (le client_secret se lit sur
+   * /oauth/register), puis l'echanger contre le token de l'ami (revue du
+   * 2026-10-07).
+   */
+  redirectionAutorisee?: (redirectUri: string) => boolean;
+  /** Instance invitee : PKCE S256 seulement (pas de `plain`). */
+  pkceS256Seulement?: boolean;
 }
 
 const SESSION_EXPIRY_MS = Number(process.env.SESSION_EXPIRY_MS || 24 * 60 * 60 * 1000);
@@ -67,7 +86,7 @@ export function registerOAuthRoutes(app: Express, config: OAuthConfig): void {
       setSessionCookie(res, sessionId);
     }
 
-    res.send(pages.loginPage());
+    res.send(pages.loginPage(undefined, config.pageConnexion));
   });
 
   app.post('/login', async (req, res) => {
@@ -81,20 +100,30 @@ export function registerOAuthRoutes(app: Express, config: OAuthConfig): void {
     }
 
     if (!token) {
-      res.send(pages.loginPage('Please enter your authentication token'));
+      res.send(
+        pages.loginPage(
+          config.pageConnexion?.erreurVide ?? 'Please enter your authentication token',
+          config.pageConnexion,
+        ),
+      );
       return;
     }
 
     if (!sessionId) {
-      res.send(pages.loginPage('Unable to establish session'));
+      res.send(pages.loginPage('Unable to establish session', config.pageConnexion));
       return;
     }
 
-    if (await auth.authenticateSession(sessionId, token)) {
+    if (await auth.authenticateSession(sessionId, token, config.verifierConnexion)) {
       setSessionCookie(res, sessionId);
       res.redirect('/oauth/consent');
     } else {
-      res.send(pages.loginPage('Invalid authentication token'));
+      res.send(
+        pages.loginPage(
+          config.pageConnexion?.erreurInvalide ?? 'Invalid authentication token',
+          config.pageConnexion,
+        ),
+      );
     }
   });
 
@@ -130,6 +159,21 @@ export function registerOAuthRoutes(app: Express, config: OAuthConfig): void {
       return res
         .status(400)
         .send(pages.errorPage('invalid_request', 'code_challenge_method must be S256 or plain'));
+    }
+
+    if (config.pkceS256Seulement && code_challenge_method !== 'S256') {
+      return res
+        .status(400)
+        .send(pages.errorPage('invalid_request', 'code_challenge_method must be S256'));
+    }
+
+    if (
+      config.redirectionAutorisee &&
+      (typeof redirect_uri !== 'string' || !config.redirectionAutorisee(redirect_uri))
+    ) {
+      return res
+        .status(400)
+        .send(pages.errorPage('invalid_request', 'redirect_uri is not allowed'));
     }
 
     let sessionId = req.cookies?.session_id;
@@ -190,6 +234,9 @@ export function registerOAuthRoutes(app: Express, config: OAuthConfig): void {
       return res.redirect('/login');
     }
 
+    // L'identite de l'ami se lit AVANT de consommer la demande : c'est elle
+    // que le code, puis le token, porteront jusqu'a chaque appel MCP.
+    const inviteId = (await auth.getSession(sessionId))?.inviteId;
     const pending = await auth.consumePendingAuthRequest(sessionId);
 
     if (!pending) {
@@ -202,6 +249,7 @@ export function registerOAuthRoutes(app: Express, config: OAuthConfig): void {
       pending.codeChallenge,
       pending.codeChallengeMethod,
       pending.redirectUri,
+      inviteId,
     );
 
     const redirectUrl = new URL(pending.redirectUri);
@@ -283,7 +331,7 @@ export function registerOAuthRoutes(app: Express, config: OAuthConfig): void {
         });
       }
 
-      const result = await auth.refreshAccessToken(refresh_token);
+      const result = await auth.refreshAccessToken(refresh_token, config.accepterRafraichissement);
 
       if (!result) {
         try {
@@ -326,6 +374,13 @@ export function registerOAuthRoutes(app: Express, config: OAuthConfig): void {
       return res.status(400).json({
         error: 'invalid_client_metadata',
         error_description: 'Each redirect URI must be a string',
+      });
+    }
+
+    if (config.redirectionAutorisee && redirectUris.some(uri => !config.redirectionAutorisee!(uri))) {
+      return res.status(400).json({
+        error: 'invalid_redirect_uri',
+        error_description: 'redirect_uri is not allowed',
       });
     }
 

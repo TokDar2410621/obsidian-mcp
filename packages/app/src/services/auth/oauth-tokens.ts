@@ -1,6 +1,7 @@
 import { getAuthStore } from './auth-store-singleton.js';
 import { generateSecureToken, verifyCodeChallenge } from './pkce.js';
 import { logger } from '@/utils/logger';
+import type { AccessTokenData } from './stores/types.js';
 
 const AUTH_CODE_EXPIRY = 10 * 60 * 1000;
 // Personal single-user server: a short-lived access token buys no real security
@@ -12,6 +13,7 @@ export async function createAuthorizationCode(
   codeChallenge: string,
   codeChallengeMethod: 'S256' | 'plain',
   redirectUri: string,
+  inviteId?: string,
 ): Promise<string> {
   const code = generateSecureToken();
   const now = Date.now();
@@ -24,6 +26,7 @@ export async function createAuthorizationCode(
     redirectUri,
     createdAt: now,
     expiresAt: now + AUTH_CODE_EXPIRY,
+    ...(inviteId ? { inviteId } : {}),
   });
 
   return code;
@@ -75,7 +78,8 @@ export async function exchangeCodeForToken(
     refreshToken,
     createdAt: now,
     expiresAt: now + ACCESS_TOKEN_EXPIRY,
-    scope: 'vault:read vault:write',
+    scope: authCode.inviteId ? 'vault:read' : 'vault:read vault:write',
+    ...(authCode.inviteId ? { inviteId: authCode.inviteId } : {}),
   };
 
   await store.setAccessToken(tokenData);
@@ -103,14 +107,26 @@ interface RefreshResponse {
  * pair instead. In-memory: single-instance server, and the window is short.
  */
 const REFRESH_GRACE_MS = Number(process.env.REFRESH_GRACE_MS || 5 * 60 * 1000);
-const recentRotations = new Map<string, { response: RefreshResponse; rotatedAt: number }>();
+const recentRotations = new Map<
+  string,
+  { response: RefreshResponse; rotatedAt: number; inviteId?: string }
+>();
+
+/**
+ * Le grant de cet ami tient-il encore ? Instance invitee : un ami revoque ne
+ * rafraichit plus rien, pas meme un rejeu dans la fenetre de grace.
+ */
+export type AccepterRafraichissement = (inviteId?: string) => Promise<boolean>;
 
 /** Test hook: forget past rotations. */
 export function clearRefreshGrace(): void {
   recentRotations.clear();
 }
 
-export async function refreshAccessToken(refreshToken: string): Promise<RefreshResponse | null> {
+export async function refreshAccessToken(
+  refreshToken: string,
+  accepter?: AccepterRafraichissement,
+): Promise<RefreshResponse | null> {
   // A replay of a refresh token consumed moments ago is a lost-response retry,
   // not an attack: answer it with the same pair (idempotence), don't kill the grant.
   // Guard: the served pair must still be alive in the store. Without this, an
@@ -119,6 +135,9 @@ export async function refreshAccessToken(refreshToken: string): Promise<RefreshR
   const store = getAuthStore();
   const replay = recentRotations.get(refreshToken);
   if (replay) {
+    if (accepter && !(await accepter(replay.inviteId))) {
+      return null;
+    }
     if (
       Date.now() - replay.rotatedAt < REFRESH_GRACE_MS &&
       (await store.getRefreshToken(replay.response.refreshToken))
@@ -140,6 +159,10 @@ export async function refreshAccessToken(refreshToken: string): Promise<RefreshR
   // connector every hour (the "requires re-authorization" loop). The refresh
   // token itself is the proof of grant: tolerate a missing old access token.
   const oldTokenData = await store.getAccessToken(refreshData.accessToken);
+  const inviteId = refreshData.inviteId ?? oldTokenData?.inviteId;
+  if (accepter && !(await accepter(inviteId))) {
+    return null;
+  }
   if (oldTokenData) {
     await store.deleteAccessToken(refreshData.accessToken);
   }
@@ -153,7 +176,8 @@ export async function refreshAccessToken(refreshToken: string): Promise<RefreshR
     refreshToken: newRefreshToken,
     createdAt: now,
     expiresAt: now + ACCESS_TOKEN_EXPIRY,
-    scope: oldTokenData?.scope ?? 'vault:read vault:write',
+    scope: oldTokenData?.scope ?? (inviteId ? 'vault:read' : 'vault:read vault:write'),
+    ...(inviteId ? { inviteId } : {}),
   };
 
   await store.setAccessToken(tokenData);
@@ -163,7 +187,7 @@ export async function refreshAccessToken(refreshToken: string): Promise<RefreshR
     refreshToken: newRefreshToken,
     expiresIn: Math.floor(ACCESS_TOKEN_EXPIRY / 1000),
   };
-  recentRotations.set(refreshToken, { response, rotatedAt: now });
+  recentRotations.set(refreshToken, { response, rotatedAt: now, inviteId });
   if (recentRotations.size > 64) {
     for (const [key, value] of recentRotations) {
       if (Date.now() - value.rotatedAt >= REFRESH_GRACE_MS) recentRotations.delete(key);
@@ -173,11 +197,16 @@ export async function refreshAccessToken(refreshToken: string): Promise<RefreshR
 }
 
 export async function validateAccessToken(token: string): Promise<boolean> {
+  return (await getValidAccessToken(token)) !== null;
+}
+
+/** Le token s'il est valide (existe et n'a pas expire), null sinon. */
+export async function getValidAccessToken(token: string): Promise<AccessTokenData | null> {
   const store = getAuthStore();
   const tokenData = await store.getAccessToken(token);
 
   if (!tokenData) {
-    return false;
+    return null;
   }
 
   if (Date.now() > tokenData.expiresAt) {
@@ -186,10 +215,10 @@ export async function validateAccessToken(token: string): Promise<boolean> {
     // refresh token the client was about to use. That cascade was the root of
     // the hourly "requires re-authorization" loop. The stale row is reclaimed
     // by the next successful refresh (its deleteAccessToken call).
-    return false;
+    return null;
   }
 
-  return true;
+  return tokenData;
 }
 
 export async function revokeToken(token: string): Promise<boolean> {

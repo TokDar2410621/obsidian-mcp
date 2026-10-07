@@ -77,8 +77,23 @@ import { registerStorageTools } from '@/mcp/storage-tool-registrations';
 import { registerUploadRoutes } from '@/server/local/upload-page';
 import { registerCerveauApi } from '@/server/local/cerveau-api';
 import { getSettingsStore } from '@/services/settings/settings-store';
+import path from 'path';
+import { estModeInvite } from '@/services/securite/zones-sensibles';
+import { SkillsService } from '@/services/skills/skills-service';
+import { registerSkillsTools } from '@/mcp/skills-tool-registrations';
+import { OpenAiEmbeddingProvider } from '@/services/rag/embeddings';
+import { registerSkillsCatalogRoute } from '@/server/local/skills-catalog-route';
+import { cronPermis, profilNeutre, rappelMotivePermis } from '@/server/local/profil';
 
 loadEnv();
+
+// Fail-closed : ce serveur ecrit dans le coffre, envoie des notifs et lance
+// quatorze crons. Avec GUEST_MODE=true, c'est Dan qui doit tourner
+// (dist/guest/index.js), jamais lui.
+if (estModeInvite()) {
+  console.error('✗ GUEST_MODE=true : lance dist/guest/index.js (Dan), pas le serveur perso.');
+  process.exit(1);
+}
 
 configureLogger({
   stream: process.stdout,
@@ -152,6 +167,24 @@ if (ragService) {
   registerRagTools(serveurOutils, ragService);
 }
 
+// Catalogue de skills (09-skills/) : find-skill / read-skill, index a part.
+const skillsService = process.env.OPENAI_API_KEY?.trim()
+  ? new SkillsService({
+      vault: vaultManager,
+      embedder: new OpenAiEmbeddingProvider(
+        process.env.OPENAI_API_KEY.trim(),
+        process.env.RAG_EMBEDDING_MODEL || 'text-embedding-3-small',
+      ),
+      indexFile: path.join(
+        process.env.RAG_INDEX_DIR || path.join(process.cwd(), '.rag-index'),
+        'cerveau-skills-index.json',
+      ),
+    })
+  : null;
+if (skillsService) {
+  registerSkillsTools(serveurOutils, skillsService);
+}
+
 // Optional Synapses "thinking" layer (suggest-links / audit-coherence /
 // find-themes / cerveau-digest). Needs RAG + ANTHROPIC_API_KEY.
 const synapsesService = ragService ? createSynapsesService(ragService) : null;
@@ -181,7 +214,7 @@ if (ragService && memoryStore) {
   // Motivated recall: strong traces surface first (forgetting shapes recall).
   ragService.setStrengthProvider(file => memoryStore.strengthOf(file));
 }
-if (ragService) {
+if (ragService && rappelMotivePermis()) {
   // The motivational compass: retrieval is biased toward Darius's explicit
   // priorities and his documented blocking patterns (fears), like a human
   // whose active goals prime what comes to mind. Re-read at each reindex.
@@ -338,6 +371,9 @@ if (bucketStore) {
 }
 
 const app = express();
+// Monte AVANT le parseur JSON global (plafond 100 ko) : un catalogue de skills
+// pese plusieurs megaoctets. Gardee par le jeton local.
+registerSkillsCatalogRoute(app, vaultManager, skillsService ? () => skillsService.refresh() : undefined);
 // Capture the raw body so the GitHub webhook can verify its HMAC signature.
 app.use(express.json({ verify: (req, _res, buf) => ((req as any).rawBody = buf) }));
 app.use(express.urlencoded({ extended: true }));
@@ -416,10 +452,19 @@ registerMcpRoute(app, mcpServer);
 if (ragService) {
   // organs: vault for the echoes file (spreading activation at every push),
   // reflection for the opt-in micro-wake (EVENT_REFLECTION=on).
-  registerGithubWebhook(app, ragService, graphService, objectiveSweep, captureLink, {
-    vault: vaultManager,
-    reflection,
-  });
+  // Profil neutre : les balayages ne repartent pas non plus par le webhook.
+  registerGithubWebhook(
+    app,
+    ragService,
+    graphService,
+    cronPermis('OBJECTIVE_SWEEP') ? objectiveSweep : null,
+    cronPermis('CAPTURE_LINK') ? captureLink : null,
+    {
+      vault: vaultManager,
+      reflection,
+      rafraichirEnPlus: skillsService ? () => skillsService.refresh() : null,
+    },
+  );
 }
 
 const PORT = parseInt(process.env.PORT || '3000');
@@ -459,16 +504,16 @@ Configure ChatGPT/Claude with:
       .ensureReady()
       .then(() => {
         console.log('✓ RAG index ready (search-cerveau / ask-cerveau)');
-        if (synapsesService) {
+        if (synapsesService && cronPermis('SYNAPSES_DIGEST')) {
           scheduleSynapsesDigest(synapsesService, vaultManager);
         }
-        if (learning) {
+        if (learning && cronPermis('MAINTENANCE_ENABLED')) {
           scheduleWeeklyMaintenance(learning.service, vaultManager);
         }
-        if (reflection) {
+        if (reflection && cronPermis('DAILY_REFLECTION')) {
           scheduleDailyReflection(reflection);
         }
-        if (graphService) {
+        if (graphService && cronPermis('GRAPH_REBUILD')) {
           // Le filet de verite du batissage differentiel : le webhook ne fait
           // plus que des deltas, cette passe nocturne rejoue le build complet
           // (cout nul a cache chaud) et repare les extractions vides.
@@ -477,7 +522,7 @@ Configure ChatGPT/Claude with:
         if (notifier) {
           console.log('✓ ntfy notifications enabled');
         }
-        if (objectiveSweep) {
+        if (objectiveSweep && cronPermis('OBJECTIVE_SWEEP')) {
           scheduleObjectiveSweep(objectiveSweep);
           // Catch-up sweep at boot: deadlines fire by calendar, and pushes may
           // have landed while the container was down.
@@ -492,7 +537,7 @@ Configure ChatGPT/Claude with:
               console.error('Objective sweep (boot) failed', error);
             });
         }
-        if (captureLink) {
+        if (captureLink && cronPermis('CAPTURE_LINK')) {
           scheduleCaptureLinkSweep(captureLink);
           // Catch-up at boot: link any captures that landed while down.
           captureLink
@@ -506,10 +551,12 @@ Configure ChatGPT/Claude with:
               console.error('Capture link sweep (boot) failed', error);
             });
         }
-        if (morningBrief) {
+        if (morningBrief && cronPermis('MORNING_BRIEF')) {
           scheduleMorningBrief(morningBrief);
         }
-        scheduleRelanceSweep(relanceSweep);
+        if (cronPermis('RELANCE_SWEEP')) {
+          scheduleRelanceSweep(relanceSweep);
+        }
         if (graphService) {
           graphService
             .build()
@@ -522,6 +569,16 @@ Configure ChatGPT/Claude with:
         }
       })
       .catch((error: any) => console.error('✗ RAG index build failed:', error?.message ?? error));
+  }
+
+  if (skillsService) {
+    skillsService
+      .ensureReady()
+      .then(() => console.log(`✓ Catalogue de skills pret (${skillsService.taille} skills)`))
+      .catch((error: any) => console.error('✗ Catalogue de skills en echec:', error?.message ?? error));
+  }
+  if (profilNeutre()) {
+    console.log('✓ Profil neutre : crons coupes sauf flag explicite `on`');
   }
 
   // Sensors don't depend on the RAG index (money and time are read straight
@@ -538,7 +595,7 @@ Configure ChatGPT/Claude with:
     .lier(vaultManager)
     .catch(error => console.error('pouls: chargement echoue', error))
     .finally(() => {
-      const santeActive = scheduleBattement(battement);
+      const santeActive = cronPermis('SANTE') && scheduleBattement(battement);
       if (santeActive) {
         setTimeout(
           () =>
@@ -550,14 +607,13 @@ Configure ChatGPT/Claude with:
         );
       }
     });
-  schedulePoussoir(poussoirService);
-  scheduleLivraison(livraisonService);
-  schedulePeremption(peremptionService);
-  scheduleRetours(retoursService);
+  if (cronPermis('POUSSOIR')) schedulePoussoir(poussoirService);
+  if (cronPermis('LIVRAISON')) scheduleLivraison(livraisonService);
+  if (cronPermis('LIVRAISON_PEREMPTION')) schedulePeremption(peremptionService);
+  if (cronPermis('RETOURS')) scheduleRetours(retoursService);
 
-  scheduleStripeProbe(stripeProbe);
-  stripeProbe
-    .runProbe()
+  if (cronPermis('STRIPE_SENSOR')) scheduleStripeProbe(stripeProbe);
+  (cronPermis('STRIPE_SENSOR') ? stripeProbe.runProbe() : Promise.resolve({ skipped: true }))
     .then(s => {
       if (!s.skipped) {
         const err = (s as { error?: string }).error;
@@ -566,9 +622,8 @@ Configure ChatGPT/Claude with:
       }
     })
     .catch(error => console.error('Stripe probe (boot) failed', error));
-  scheduleCalendarProbe(calendarProbe);
-  calendarProbe
-    .runProbe()
+  if (cronPermis('CALENDAR_SENSOR')) scheduleCalendarProbe(calendarProbe);
+  (cronPermis('CALENDAR_SENSOR') ? calendarProbe.runProbe() : Promise.resolve({ skipped: true }))
     .then(s => {
       if (!s.skipped) {
         const err = (s as { error?: string }).error;

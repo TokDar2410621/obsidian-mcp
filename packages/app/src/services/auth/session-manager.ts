@@ -63,9 +63,39 @@ export async function getSession(sessionId: string): Promise<Session | null> {
   }
 }
 
+/**
+ * Qui a le droit de se connecter. Rend `{}` pour l'humain unique de l'instance
+ * perso, `{ inviteId }` pour un ami sur l'instance invitee, null sinon.
+ */
+export type VerificateurConnexion = (token: string) => Promise<{ inviteId?: string } | null>;
+
+/** Instance perso : le seul secret valable est PERSONAL_AUTH_TOKEN. */
+export const verifierJetonPersonnel: VerificateurConnexion = async providedToken => {
+  const validToken = process.env.PERSONAL_AUTH_TOKEN;
+
+  if (!validToken) {
+    logger.error('PERSONAL_AUTH_TOKEN not configured');
+    return null;
+  }
+
+  if (typeof providedToken !== 'string') {
+    return null;
+  }
+
+  const validBuffer = Buffer.from(validToken);
+  const providedBuffer = Buffer.from(providedToken);
+
+  if (validBuffer.length !== providedBuffer.length) {
+    return null;
+  }
+
+  return crypto.timingSafeEqual(validBuffer, providedBuffer) ? {} : null;
+};
+
 export async function authenticateSession(
   sessionId: string,
   providedToken: string,
+  verifier: VerificateurConnexion = verifierJetonPersonnel,
 ): Promise<boolean> {
   const session = await getSession(sessionId);
 
@@ -73,30 +103,14 @@ export async function authenticateSession(
     return false;
   }
 
-  const validToken = process.env.PERSONAL_AUTH_TOKEN;
-
-  if (!validToken) {
-    logger.error('PERSONAL_AUTH_TOKEN not configured');
-    return false;
-  }
-
-  if (typeof providedToken !== 'string') {
-    return false;
-  }
-
-  const validBuffer = Buffer.from(validToken);
-  const providedBuffer = Buffer.from(providedToken);
-
-  if (validBuffer.length !== providedBuffer.length) {
-    return false;
-  }
-
-  const isValid = crypto.timingSafeEqual(validBuffer, providedBuffer);
+  const identite = typeof providedToken === 'string' ? await verifier(providedToken) : null;
+  const isValid = identite !== null;
 
   if (isValid) {
     const updatedSession: Session = {
       ...session,
       authenticated: true,
+      ...(identite.inviteId ? { inviteId: identite.inviteId } : {}),
     };
     const store = getAuthStore();
     await store.setSession(updatedSession);

@@ -7,13 +7,43 @@
 /**
  * Login page - asks for personal auth token
  */
-export function loginPage(error?: string): string {
+/** Textes de la page de connexion, surchargeables (instance invitee Dan). */
+export interface TextesConnexion {
+  titre?: string;
+  sousTitre?: string;
+  libelle?: string;
+  placeholder?: string;
+  bouton?: string;
+  aide?: string;
+  erreurVide?: string;
+  erreurInvalide?: string;
+}
+
+function echapper(texte: string): string {
+  return texte
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+export function loginPage(error?: string, textes?: TextesConnexion): string {
+  const titre = echapper(textes?.titre ?? 'Obsidian MCP');
+  const sousTitre = echapper(textes?.sousTitre ?? 'Secure Authentication');
+  const libelle = echapper(textes?.libelle ?? 'Personal Authentication Token');
+  const placeholder = echapper(textes?.placeholder ?? 'Enter your personal auth token');
+  const bouton = echapper(textes?.bouton ?? 'Authenticate');
+  const aide =
+    textes?.aide !== undefined
+      ? echapper(textes.aide)
+      : `<strong>💡 Where to find your token:</strong><br>
+      Your personal auth token is set in <code>PERSONAL_AUTH_TOKEN</code> in your server configuration.`;
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Login - Obsidian MCP</title>
+  <title>Login - ${titre}</title>
   <style>
     * {
       margin: 0;
@@ -117,31 +147,30 @@ export function loginPage(error?: string): string {
 <body>
   <div class="container">
     <div class="logo">
-      <h1>🔐 Obsidian MCP</h1>
-      <p>Secure Authentication</p>
+      <h1>🔐 ${titre}</h1>
+      <p>${sousTitre}</p>
     </div>
 
     ${error ? `<div class="error">⚠️ ${error}</div>` : ''}
 
     <form method="POST" action="/login">
       <div class="form-group">
-        <label for="token">Personal Authentication Token</label>
+        <label for="token">${libelle}</label>
         <input
           type="password"
           id="token"
           name="token"
-          placeholder="Enter your personal auth token"
+          placeholder="${placeholder}"
           required
           autofocus
         />
       </div>
 
-      <button type="submit">Authenticate</button>
+      <button type="submit">${bouton}</button>
     </form>
 
     <div class="hint">
-      <strong>💡 Where to find your token:</strong><br>
-      Your personal auth token is set in <code>PERSONAL_AUTH_TOKEN</code> in your server configuration.
+      ${aide}
     </div>
   </div>
 </body>
