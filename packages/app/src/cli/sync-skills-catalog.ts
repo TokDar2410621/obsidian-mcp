@@ -369,9 +369,11 @@ function rendreIndex(
  * l'ecriture (git-vault-manager.ts, stripEmDash). Applique ici pour que
  * l'apercu --out montre exactement ce que le coffre contiendra.
  */
+const EM_DASH = new RegExp(`[ \\t]*${String.fromCharCode(0x2014)}[ \\t]*`, 'g');
+
 export function sansEmDash(fichiers: FichierCatalogue[]): FichierCatalogue[] {
   return fichiers.map(f =>
-    f.chemin.endsWith('.md') ? { ...f, contenu: f.contenu.replace(/[ \t]*—[ \t]*/g, ' : ') } : f,
+    f.chemin.endsWith('.md') ? { ...f, contenu: f.contenu.replace(EM_DASH, ' : ') } : f,
   );
 }
 

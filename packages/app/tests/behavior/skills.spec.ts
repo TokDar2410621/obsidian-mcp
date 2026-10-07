@@ -112,7 +112,7 @@ describe('GitVaultManager.remplacerDossier', () => {
       { chemin: '09-skills/a/garde.md', contenu: 'g' },
     ], { message: 'm1' });
     const r = await vm.remplacerDossier('09-skills', [
-      { chemin: '09-skills/a/garde.md', contenu: 'g2 — tiret' },
+      { chemin: '09-skills/a/garde.md', contenu: `g2 ${String.fromCharCode(0x2014)} tiret` },
       { chemin: '09-skills/b/neuf.md', contenu: 'n' },
     ], { message: 'm2' });
 

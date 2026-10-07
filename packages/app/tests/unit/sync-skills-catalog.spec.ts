@@ -10,6 +10,8 @@ import {
   valeurYaml,
 } from '@/cli/sync-skills-catalog';
 
+const TIRET = String.fromCharCode(0x2014);
+
 /** La synchro du catalogue (spec du 2026-10-07, §2.1 et §2.2). */
 
 describe('lireListeCuree', () => {
@@ -81,7 +83,7 @@ function fixture(): { maison: string; liste: string } {
   writeFileSync(path.join(plugin, 'LICENSE'), 'MIT License\n\nCopyright (c) Test');
   writeFileSync(
     path.join(plugin, 'skills', 'cat', 'debug', 'SKILL.md'),
-    '---\nname: debug\ndescription: Use when a bug — any bug\n---\n\n# Debug\n\nCorps.\n',
+    `---\nname: debug\ndescription: Use when a bug ${TIRET} any bug\n---\n\n# Debug\n\nCorps.\n`,
   );
   writeFileSync(path.join(plugin, 'skills', 'cat', 'debug', 'references', 'guide.md'), '# Guide\n');
   writeFileSync(path.join(plugin, 'skills', 'cat', 'debug', 'script.sh'), 'echo');
@@ -130,7 +132,7 @@ describe('construireCatalogue', () => {
     expect(fiche).toContain('fichiers_non_copies: 1');
     expect(fiche).toContain('# Debug');
     // Zero em-dash, comme le serveur l'assainirait a l'ecriture.
-    for (const f of r.fichiers) expect(f.contenu).not.toContain('—');
+    for (const f of r.fichiers) expect(f.contenu).not.toContain(TIRET);
     expect(r.ignores).toEqual([
       { collection: 'sp', skill: 'introuvable', raison: 'dossier introuvable' },
       { collection: 'darius', skill: 'sans-licence', raison: 'aucune licence claire' },
