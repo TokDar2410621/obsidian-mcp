@@ -99,9 +99,9 @@ describe('VaultInvite : listings', () => {
     const dan = new VaultInvite(coffre());
     const tout = await dan.listFiles('', { recursive: true, includeDirectories: true });
     expect(tout).toContain('05-projects/offre/playbook.md');
-    expect(tout).toContain('01-raw/inbox/idee.md');
+    expect(tout).not.toContain('01-raw/inbox/idee.md');
     for (const p of tout) {
-      expect(p).not.toMatch(/^(00-personnel|04-people|Personnes|01-raw\/docs)/);
+      expect(p).not.toMatch(/^(00-personnel|04-people|Personnes|01-raw|Journal|03-daily|09-taches|09-archive)/);
     }
   });
 

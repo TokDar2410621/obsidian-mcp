@@ -233,10 +233,33 @@ async function skills(args: string[]): Promise<number> {
   return code;
 }
 
+/**
+ * Exporte, dans un dossier, EXACTEMENT ce que Dan servirait d'un coffre
+ * (zones cachees retirees, donnees personnelles masquees). Sert a auditer
+ * le resultat avec un outil independant, avant d'ouvrir Dan.
+ */
+async function exporter(args: string[]): Promise<number> {
+  const coffre = option(args, '--coffre');
+  const sortie = option(args, '--sortie');
+  if (!coffre || !sortie) throw new Error('--coffre et --sortie sont requis');
+  process.env.GUEST_MODE = 'true';
+  const dan = new VaultInvite(new CoffreLocal(path.resolve(coffre)));
+  const notes = await dan.listFiles('', { recursive: true, fileTypes: ['md'] });
+  const contenus = await dan.readManyFiles(notes);
+  for (const [rel, contenu] of contenus) {
+    const cible = path.join(sortie, ...rel.split('/'));
+    await fs.mkdir(path.dirname(cible), { recursive: true });
+    await fs.writeFile(cible, contenu, 'utf8');
+  }
+  console.log(`Export : ${contenus.size} notes servies par Dan`);
+  return 0;
+}
+
 async function main(): Promise<void> {
   configureLogger({ stream: process.stderr, minLevel: 'error' });
   const [mode, ...args] = process.argv.slice(2);
-  if (mode === 'fuite') process.exitCode = await fuite(args);
+  if (mode === 'exporter') process.exitCode = await exporter(args);
+  else if (mode === 'fuite') process.exitCode = await fuite(args);
   else if (mode === 'skills') process.exitCode = await skills(args);
   else {
     console.log('Usage : verifier-dan fuite --coffre <chemin> --terme <terme> | skills --dossier <apercu> [--requete <texte>]');

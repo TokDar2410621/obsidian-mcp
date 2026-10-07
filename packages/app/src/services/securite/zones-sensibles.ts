@@ -28,11 +28,26 @@ const ZONES_DEFAUT = ['00-personnel/', '04-people/', '01-raw/docs/', '01-raw/adm
 
 /**
  * Zones que Dan (l'instance invitee) ne montre JAMAIS, quel que soit
- * CERVEAU_ZONES_SENSIBLES : decision de Darius du 2026-10-07 (spec « Cerveau
- * invite et skills integres »). La variable d'env AJOUTE des zones, elle n'en
+ * CERVEAU_ZONES_SENSIBLES. La variable d'env AJOUTE des zones, elle n'en
  * retire aucune : oublier de la poser ne doit jamais ouvrir le coffre.
+ *
+ * Decisions de Darius du 2026-10-07 :
+ *   - `Personnes/` (spec « Cerveau invite et skills integres », Q4) ;
+ *   - apres l'audit du coffre reel (Q14, Q15) : `Journal/` et `03-daily/`
+ *     (recit personnel mele au savoir : le savoir en sort par distillation
+ *     validee, jamais par ouverture du journal), `01-raw/` (captures brutes,
+ *     numeros de documents d'immigration), `09-taches/` et `09-archive/`
+ *     (taches et reponses passees).
  */
-const ZONES_INVITE = [...ZONES_DEFAUT, 'Personnes/'];
+const ZONES_INVITE = [
+  ...ZONES_DEFAUT,
+  'Personnes/',
+  'Journal/',
+  '03-daily/',
+  '01-raw/',
+  '09-taches/',
+  '09-archive/',
+];
 
 /**
  * Instance invitee (Dan) : lecture seule, aucun deverrouillage, filtrage
