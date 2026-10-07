@@ -1,0 +1,118 @@
+# Catalogue de skills du cerveau : la liste curee (spec du 2026-10-07, §2.1).
+#
+# Une section par collection :
+#   [collection] source=<dossier> licence=<regle> [url=<origine>]
+#     source  : dossier qui contient les skills ; `~` = dossier personnel,
+#               `*` = la version la plus recente d'un plugin.
+#     licence : fichier:<chemin relatif a source>  (LICENSE du plugin)
+#               repo:<chemin relatif a ce fichier> (licence amont gardee ici)
+#               par-skill (LICENSE dans le dossier du skill, ou `license:` dans son frontmatter)
+# Puis un skill par ligne : le nom de son dossier. Ce qui n'est pas liste
+# n'est JAMAIS copie : la curation est volontaire (bruit, doublons, skills perso).
+#
+# Exclus expres : les skills qui decrivent l'infra de Darius (cerveau, planner,
+# mission, django-templates-library, e2e-auth-test-lab), ceux sans licence
+# claire (frontend-design, graphify, ui-ux-pro-max, use-railway, scroll-world,
+# web-animation-design), les skills Anthropic (docx, pdf, pptx, xlsx : non
+# redistribuables) et les plugins publics que les amis installent eux-memes.
+
+[superpowers] source=~/.claude/plugins/cache/claude-plugins-official/superpowers/* licence=fichier:LICENSE url=https://github.com/obra/superpowers
+brainstorming
+diagnosing-superpowers
+dispatching-parallel-agents
+executing-plans
+finishing-a-development-branch
+receiving-code-review
+requesting-code-review
+subagent-driven-development
+systematic-debugging
+test-driven-development
+using-git-worktrees
+using-superpowers
+verification-before-completion
+writing-plans
+writing-skills
+
+# Matt Pocock : engineering et productivity. Exclus : in-progress (inacheves),
+# misc (scripts de cours) et setup-matt-pocock-skills (installation).
+[mp] source=~/.claude/plugins/cache/claude-plugins-official/mattpocock-skills/* licence=fichier:LICENSE url=https://github.com/mattpocock/skills
+ask-matt
+code-review
+codebase-design
+diagnosing-bugs
+domain-modeling
+grill-with-docs
+implement
+improve-codebase-architecture
+prototype
+research
+resolving-merge-conflicts
+tdd
+to-spec
+to-tickets
+triage
+wayfinder
+wizard
+grill-me
+grilling
+handoff
+teach
+to-questionnaire
+wait-what
+writing-for-agents
+
+# Corey Haines, marketingskills (MIT). Ajout demande par Darius le 2026-10-06.
+[marketing] source=~/.claude/skills licence=repo:licences/marketingskills.LICENSE url=https://github.com/coreyhaines31/marketingskills
+ab-testing
+ad-creative
+ads
+ai-seo
+analytics
+aso
+churn-prevention
+co-marketing
+cold-email
+community-marketing
+competitor-profiling
+competitors
+content-strategy
+copy-editing
+copywriting
+cro
+customer-research
+directory-submissions
+emails
+free-tools
+image
+launch
+lead-magnets
+marketing-ideas
+marketing-plan
+marketing-psychology
+onboarding
+paywalls
+popups
+pricing
+product-marketing
+programmatic-seo
+prospecting
+public-relations
+referrals
+revops
+sales-enablement
+schema
+seo-audit
+signup
+site-architecture
+sms
+social
+video
+
+# Skills de Darius, ou tiers sous licence MIT verifiee skill par skill.
+[darius] source=~/.claude/skills licence=par-skill
+debate-runner
+karpathy-guidelines
+motion-scroll-web-builder
+stop-slop
+web-design
+aso-appstore-screenshots

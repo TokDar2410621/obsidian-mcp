@@ -17,7 +17,7 @@ Présente ce que tu trouves comme « d'après ${nom} » : ce sont les notes, rè
 
 ${nom} est en lecture seule : aucun outil ne crée, ne modifie ni ne supprime quoi que ce soit.
 
-Pour trouver un savoir : search-cerveau (recherche par le sens), puis read-note pour lire la note entière ; ask-cerveau pour une réponse rédigée et sourcée. Pour une méthode de travail : find-skill (ex. « debug python »), puis read-skill avec le nom exact rendu, et suis le skill dans ta conversation.
+Pour trouver un savoir : search-cerveau (recherche par le sens), puis read-note pour lire la note entière ; ask-cerveau pour une réponse rédigée et sourcée. Pour une méthode de travail : find-skill avec une requête EN ANGLAIS (les skills sont rédigés en anglais ; ex. « debug python »), puis read-skill avec le nom exact rendu, et suis le skill dans ta conversation.
 
 Les recherches sont limitées par jour et par personne ; les lectures de notes ne le sont pas.`;
 }

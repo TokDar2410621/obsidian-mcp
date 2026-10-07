@@ -14,9 +14,9 @@ export function registerSkillsTools(server: McpServer, skills: SkillsService): v
     {
       title: 'Find Skill',
       description:
-        'Cherche par le sens, dans le catalogue de skills du cerveau (09-skills/), le skill qui convient a une tache (ex. « debug python », « ecrire une page de vente »). Rend nom, description, collection et score, sans le contenu : charge ensuite le skill choisi avec read-skill.',
+        'Cherche par le sens, dans le catalogue de skills du cerveau (09-skills/), le skill qui convient a une tache. Les skills sont rediges en ANGLAIS : formule la requete en anglais, meme si la conversation est en francais (ex. « debug python », « write landing page copy », « how much should I charge »). Rend nom, description, collection et score, sans le contenu : charge ensuite le skill choisi avec read-skill.',
       inputSchema: {
-        query: z.string().min(1).describe('La tache ou le besoin, en langage naturel'),
+        query: z.string().min(1).describe('La tache ou le besoin, en langage naturel et EN ANGLAIS'),
         limit: z
           .number()
           .optional()

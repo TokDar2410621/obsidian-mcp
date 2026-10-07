@@ -39,6 +39,25 @@ export interface SkillsServiceOptions {
 const LIMITE_DEFAUT = 5;
 const LIMITE_MAX = 20;
 
+/**
+ * Poids du classement. La description d'un skill est ECRITE pour dire quand
+ * s'en servir : c'est le meilleur signal. Le corps rattrape les besoins que la
+ * description ne nomme pas. Mesure du 2026-10-07 (vrais embeddings, 89 skills) :
+ * classer les extraits du corps seuls, fusionnes avec BM25, sortait
+ * systematic-debugging du top 5 pour « debug python » (les blocs de code
+ * contenant « python » ecrasaient tout).
+ */
+const POIDS_CARTE = 0.7;
+const POIDS_CORPS = 0.3;
+const BONUS_NOM = 0.05;
+
+/** Mots de la requete qui prefixent un mot du nom (« debug » → « debugging »). */
+export function bonusNom(requete: string, nom: string): number {
+  const motsNom = nom.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  const motsRequete = requete.toLowerCase().split(/[^a-z0-9]+/).filter(m => m.length >= 3);
+  return motsRequete.filter(m => motsNom.some(n => n.startsWith(m))).length * BONUS_NOM;
+}
+
 /** Lit une valeur simple de frontmatter (`cle: valeur` ou `cle: "json"`). */
 function valeurFrontmatter(frontmatter: string, cle: string): string | null {
   const ligne = frontmatter.split(/\r?\n/).find(l => l.startsWith(`${cle}:`));
@@ -93,7 +112,10 @@ export function nomsProches(demande: string, noms: string[], n = 3): string[] {
 
 export class SkillsService implements VaultReader {
   private readonly vault: VaultManager;
+  /** Index du corps des skills (extraits par titre). */
   private readonly rag: RagService;
+  /** Index des cartes : une par skill, nom et description seulement. */
+  private readonly ragCartes: RagService;
   private fiches = new Map<string, FicheSkill>();
   private contenus = new Map<string, string>();
   private catalogueCharge = false;
@@ -107,7 +129,23 @@ export class SkillsService implements VaultReader {
       generator: null,
       indexFile: options.indexFile,
       persist: options.persist ?? true,
-      hybrid: true,
+      hybrid: false,
+      reranker: null,
+    });
+    this.ragCartes = new RagService({
+      reader: {
+        listMarkdownFiles: () => this.listMarkdownFiles(),
+        readFile: async chemin => {
+          const fiche = this.fiches.get(chemin);
+          if (!fiche) throw new Error(`Skill absent du catalogue : ${chemin}`);
+          return `# ${fiche.nom}\n\n${fiche.description}`;
+        },
+      },
+      embedder: options.embedder,
+      generator: null,
+      indexFile: options.indexFile.replace(/\.json$/, '') + '-cartes.json',
+      persist: options.persist ?? true,
+      hybrid: false,
       reranker: null,
     });
   }
@@ -188,13 +226,26 @@ export class SkillsService implements VaultReader {
 
   async ensureReady(): Promise<void> {
     await this.chargerCatalogue();
+    await this.ragCartes.ensureReady();
     await this.rag.ensureReady();
   }
 
-  /** Relit le catalogue et met l'index a jour (seuls les skills modifies sont re-embeddes). */
+  /** Relit le catalogue et met les index a jour (seuls les skills modifies sont re-embeddes). */
   async refresh(): Promise<void> {
     await this.chargerCatalogue(true);
+    await this.ragCartes.refresh();
     await this.rag.refresh();
+  }
+
+  /** Meilleur cosinus par skill, sur un index donne. */
+  private async scores(rag: RagService, query: string): Promise<Map<string, number>> {
+    const r = await rag.searchCerveau({ query, top_k: 30 });
+    if (!r.success) throw new Error(r.error);
+    const out = new Map<string, number>();
+    for (const hit of (r.data as { results?: Array<{ path: string; score: number }> })?.results ?? []) {
+      out.set(hit.path, Math.max(out.get(hit.path) ?? -1, hit.score));
+    }
+    return out;
   }
 
   // --- outils -----------------------------------------------------------------
@@ -203,27 +254,26 @@ export class SkillsService implements VaultReader {
     try {
       await this.ensureReady();
       const limite = Math.min(Math.max(1, Math.floor(args.limit ?? LIMITE_DEFAUT)), LIMITE_MAX);
-      const r = await this.rag.searchCerveau({ query: args.query, top_k: 30 });
-      if (!r.success) return r;
-      const resultats = ((r.data as { results?: Array<{ path: string; score: number }> })?.results ?? []);
-
-      // L'ordre de la recherche hybride fait foi ; le score affiche est le
-      // meilleur cosinus des extraits du skill.
-      const ordre: string[] = [];
-      const meilleur = new Map<string, number>();
-      for (const hit of resultats) {
-        if (!meilleur.has(hit.path)) ordre.push(hit.path);
-        meilleur.set(hit.path, Math.max(meilleur.get(hit.path) ?? -1, hit.score));
-      }
-      const skills = ordre
-        .map(p => this.fiches.get(p))
-        .filter((f): f is FicheSkill => Boolean(f))
+      const [cartes, corps] = await Promise.all([
+        this.scores(this.ragCartes, args.query),
+        this.scores(this.rag, args.query),
+      ]);
+      const skills = [...this.fiches.values()]
+        .map(f => {
+          const score =
+            POIDS_CARTE * Math.max(0, cartes.get(f.chemin) ?? 0) +
+            POIDS_CORPS * Math.max(0, corps.get(f.chemin) ?? 0) +
+            bonusNom(args.query, f.nom);
+          return { f, score };
+        })
+        .filter(x => x.score > 0)
+        .sort((a, b) => b.score - a.score || a.f.nom.localeCompare(b.f.nom))
         .slice(0, limite)
-        .map(f => ({
+        .map(({ f, score }) => ({
           nom: f.nom,
           description: f.description,
           collection: f.collection,
-          score: meilleur.get(f.chemin) ?? 0,
+          score: Math.round(score * 1000) / 1000,
         }));
       return ok({ skills, total: skills.length, catalogue: this.fiches.size });
     } catch (error: any) {
