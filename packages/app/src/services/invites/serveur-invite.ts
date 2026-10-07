@@ -62,6 +62,19 @@ export function messageQuota(quota: number): string {
   );
 }
 
+/**
+ * search-vault compile `path_filter` en RegExp : `(.+)+\u0000` gele la boucle
+ * d'evenements pour tous les amis (revue du 2026-10-07, ReDoS). Chez Dan, le
+ * filtre devient un texte litteral, borne a 200 caracteres.
+ */
+export function assainirArguments(nom: string, args: unknown): unknown {
+  if (nom !== 'search-vault' || !args || typeof args !== 'object') return args;
+  const a = args as Record<string, unknown>;
+  if (typeof a.path_filter !== 'string') return args;
+  const litteral = a.path_filter.slice(0, 200).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return { ...a, path_filter: litteral };
+}
+
 /** Ce que l'audit retient d'un appel : des chemins ou un nom de skill, jamais le reste. */
 function cibles(nom: string, args: unknown): string[] {
   const chemins = cheminsDe(args);
@@ -120,7 +133,8 @@ export function serveurInvite(server: McpServer, options: OptionsServeurInvite):
           ...config,
           description: `Dan, l'IA de Darius (lecture seule). ${description}`.trim(),
         };
-        const garde = async (args: unknown, extra: unknown): Promise<unknown> => {
+        const garde = async (argsBruts: unknown, extra: unknown): Promise<unknown> => {
+          const args = assainirArguments(nom, argsBruts);
           const invite = appelant().invite;
           if (!invite) return erreur('Appel refusé : aucun ami authentifié.');
           const chemins = cibles(nom, args);

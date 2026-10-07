@@ -1,4 +1,4 @@
-import express, { type Express, type Request, type Response } from 'express';
+import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import type { VaultManager } from '@/services/vault-manager';
 import { toVaultRelativePath } from '@/services/vault-manager';
 import { estJetonLocal, jetonLocalConfigure } from '@/services/securite/appelant';
@@ -35,13 +35,18 @@ export function registerSkillsCatalogRoute(
 
   app.post(
     '/admin/skills-catalog',
-    express.json({ limit: '25mb' }),
-    async (req: Request, res: Response) => {
+    // Le jeton AVANT le parseur : sans lui, n'importe qui faisait analyser
+    // 25 Mo de JSON au serveur perso a chaque requete (revue du 2026-10-07).
+    (req: Request, res: Response, next: NextFunction) => {
       const entete = req.headers.authorization ?? '';
       if (!entete.startsWith('Bearer ') || !estJetonLocal(entete.substring(7))) {
         res.status(401).json({ error: 'unauthorized' });
         return;
       }
+      next();
+    },
+    express.json({ limit: '25mb' }),
+    async (req: Request, res: Response) => {
       if (!vault.remplacerDossier) {
         res.status(501).json({ error: 'ce coffre ne sait pas remplacer un dossier en un commit' });
         return;

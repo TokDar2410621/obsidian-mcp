@@ -28,6 +28,16 @@ export interface OAuthConfig {
   accepterRafraichissement?: auth.AccepterRafraichissement;
   /** Textes de la page de connexion (instance invitee : en francais, « Dan »). */
   pageConnexion?: pages.TextesConnexion;
+  /**
+   * Instance invitee : seules ces redirect_uri recoivent un code. Sans liste
+   * blanche, n'importe qui pouvait envoyer a un ami un lien d'autorisation qui
+   * renvoie le code vers son propre site (le client_secret se lit sur
+   * /oauth/register), puis l'echanger contre le token de l'ami (revue du
+   * 2026-10-07).
+   */
+  redirectionAutorisee?: (redirectUri: string) => boolean;
+  /** Instance invitee : PKCE S256 seulement (pas de `plain`). */
+  pkceS256Seulement?: boolean;
 }
 
 const SESSION_EXPIRY_MS = Number(process.env.SESSION_EXPIRY_MS || 24 * 60 * 60 * 1000);
@@ -149,6 +159,21 @@ export function registerOAuthRoutes(app: Express, config: OAuthConfig): void {
       return res
         .status(400)
         .send(pages.errorPage('invalid_request', 'code_challenge_method must be S256 or plain'));
+    }
+
+    if (config.pkceS256Seulement && code_challenge_method !== 'S256') {
+      return res
+        .status(400)
+        .send(pages.errorPage('invalid_request', 'code_challenge_method must be S256'));
+    }
+
+    if (
+      config.redirectionAutorisee &&
+      (typeof redirect_uri !== 'string' || !config.redirectionAutorisee(redirect_uri))
+    ) {
+      return res
+        .status(400)
+        .send(pages.errorPage('invalid_request', 'redirect_uri is not allowed'));
     }
 
     let sessionId = req.cookies?.session_id;
@@ -349,6 +374,13 @@ export function registerOAuthRoutes(app: Express, config: OAuthConfig): void {
       return res.status(400).json({
         error: 'invalid_client_metadata',
         error_description: 'Each redirect URI must be a string',
+      });
+    }
+
+    if (config.redirectionAutorisee && redirectUris.some(uri => !config.redirectionAutorisee!(uri))) {
+      return res.status(400).json({
+        error: 'invalid_redirect_uri',
+        error_description: 'redirect_uri is not allowed',
       });
     }
 

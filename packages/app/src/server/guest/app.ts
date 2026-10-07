@@ -12,13 +12,13 @@ import { registerSynapsesTools } from '@/mcp/synapses-tool-registrations';
 import { registerGraphTools } from '@/mcp/graph-tool-registrations';
 import { registerSkillsTools } from '@/mcp/skills-tool-registrations';
 import type { VaultManager } from '@/services/vault-manager';
-import { VaultInvite } from '@/services/invites/vault-invite';
+import { LecteurDan, VaultInvite } from '@/services/invites/vault-invite';
+import { redirectionAutoriseeDan } from '@/services/invites/oauth-dan';
 import { serveurInvite } from '@/services/invites/serveur-invite';
 import type { InviteStore } from '@/services/invites/invite-store';
 import { avecAppelant, estJetonLocal } from '@/services/securite/appelant';
 import { RagService } from '@/services/rag/rag-service';
 import { RagAnswerGenerator } from '@/services/rag/generator';
-import { GitVaultReader } from '@/services/rag/vault-reader';
 import type { EmbeddingProvider, VaultReader } from '@/services/rag/types';
 import type { LlmCompleter } from '@/services/synapses/types';
 import { SynapsesService } from '@/services/synapses/synapses-service';
@@ -49,7 +49,7 @@ export interface DependancesDan {
   completer: LlmCompleter | null;
   indexDir: string;
   persist?: boolean;
-  /** Lecteur de l'index general, construit SUR VaultInvite. Defaut : GitVaultReader. */
+  /** Lecteur de l'index general, construit SUR VaultInvite. Defaut : LecteurDan. */
   lecteur?: (vault: VaultInvite) => VaultReader;
   baseUrl: string;
   clientId: string;
@@ -95,12 +95,21 @@ export function authentifierAmi(invites: InviteStore) {
       refuser();
       return;
     }
-    const donnees = await auth.getValidAccessToken(token);
-    if (!donnees?.inviteId) {
-      refuser();
+    // Express 4 n'attrape pas le rejet d'un middleware async : une base
+    // tombee tuerait le processus. On repond 503, ferme, sans rien ouvrir.
+    let invite: Awaited<ReturnType<InviteStore['parId']>>;
+    try {
+      const donnees = await auth.getValidAccessToken(token);
+      if (!donnees?.inviteId) {
+        refuser();
+        return;
+      }
+      invite = await invites.parId(donnees.inviteId);
+    } catch (error) {
+      logger.error('Dan : verification du token impossible', { error: String(error) });
+      res.status(503).json({ error: 'temporarily_unavailable' });
       return;
     }
-    const invite = await invites.parId(donnees.inviteId);
     if (!invite) {
       refuser();
       return;
@@ -134,7 +143,7 @@ export function creerAppDan(deps: DependancesDan): AppDan {
 
   const rag = deps.embedder
     ? new RagService({
-        reader: deps.lecteur ? deps.lecteur(vault) : new GitVaultReader(vault),
+        reader: deps.lecteur ? deps.lecteur(vault) : new LecteurDan(vault),
         embedder: deps.embedder,
         generator: deps.completer ? new RagAnswerGenerator(deps.completer) : null,
         // Nom distinct de l'index perso : un index perso copie par erreur dans
@@ -195,6 +204,8 @@ export function creerAppDan(deps: DependancesDan): AppDan {
       erreurVide: "Colle ton code d'accès.",
       erreurInvalide: 'Code invalide ou révoqué.',
     },
+    redirectionAutorisee: uri => redirectionAutoriseeDan(uri),
+    pkceS256Seulement: true,
   });
 
   registerMcpRoute(app, mcpServer, authentifierAmi(deps.invites));
@@ -219,11 +230,17 @@ export function creerAppDan(deps: DependancesDan): AppDan {
     async demarrer() {
       logger.info(`${nom} : aucun cron (instance invitee, lecture seule)`);
       if (rag) {
+        // Toujours une reindexation au boot, meme avec un index persiste : une
+        // note deplacee en zone cachee ou une zone ajoutee pendant que Dan
+        // dormait ne doit pas survivre dans l'ancien index (revue du
+        // 2026-10-07). Les embeddings inchanges sont reutilises par empreinte.
         await rag.ensureReady();
+        await rag.refresh();
         logger.info(`${nom} : index pret`);
       }
       if (skills) {
         await skills.ensureReady();
+        await skills.refresh();
         logger.info(`${nom} : catalogue de skills pret`, { skills: skills.taille });
       }
       if (graph) {

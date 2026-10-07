@@ -46,4 +46,6 @@ EXPOSE 3000
 # Démarre le serveur HTTP (OAuth) via node directement (PID 1 grâce à exec,
 # gère SIGTERM). Il lit automatiquement le PORT fourni par Railway.
 # GUEST_MODE=true lance Dan (lecture seule, aucun cron) au lieu du serveur perso.
-CMD ["sh", "-c", "if [ \"$GUEST_MODE\" = \"true\" ]; then exec node packages/app/dist/guest/index.js; else exec node packages/app/dist/http/index.js; fi"]
+# Meme normalisation que le code (espaces retires, casse ignoree) : `True`
+# lancerait sinon le serveur perso, qui refuse ce mode et redemarre en boucle.
+CMD ["sh", "-c", "G=$(printf '%s' \"$GUEST_MODE\" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]'); if [ \"$G\" = \"true\" ]; then exec node packages/app/dist/guest/index.js; else exec node packages/app/dist/http/index.js; fi"]

@@ -56,12 +56,32 @@ const OUTILS_LECTURE = new Set([
 /** Outils qui DETRUISENT. */
 const OUTILS_SUPPRESSION = new Set(['delete-note', 'delete-file']);
 
+/**
+ * Une zone ou un chemin ramene a une forme comparable : separateurs `/`, sans
+ * `./` ni `/` en tete, sans segment vide, Unicode NFC. Une zone ecrite
+ * `/Journal/`, `./Journal` ou `Journal\` designe le meme dossier que
+ * `Journal/` : la rater en silence ouvrait ce que Darius croyait ferme.
+ */
+function normaliserChemin(chemin: string): string {
+  return (chemin || '')
+    .normalize('NFC')
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter(s => s.length > 0 && s !== '.')
+    .join('/');
+}
+
 function zonesEnv(): string[] {
   const brut = process.env.CERVEAU_ZONES_SENSIBLES;
   if (!brut?.trim()) return [];
   return brut
     .split(',')
-    .map(z => z.trim())
+    .map(z => {
+      const n = normaliserChemin(z.trim());
+      // Le slash final d'origine compte : `Journal/` vise le dossier,
+      // `Journal` tout ce qui commence par ce nom.
+      return n && /[\\/]\s*$/.test(z) ? `${n}/` : n;
+    })
     .filter(Boolean);
 }
 
@@ -82,13 +102,16 @@ function fenetreMs(): number {
  * rend un listing de repertoires) : sinon son nom fuirait par une liste.
  */
 export function estSensible(chemin: string): boolean {
-  const p = (chemin || '')
-    .replace(/\\/g, '/')
-    .split('/')
-    .filter(s => s.length > 0 && s !== '.')
-    .join('/');
-  if (!p) return false;
-  return zones().some(z => p.startsWith(z) || `${p}/` === z);
+  const brut = normaliserChemin(chemin);
+  if (!brut) return false;
+  // Dan ignore aussi la casse : `journal/` ne doit pas rouvrir `Journal/`.
+  // L'instance perso garde la comparaison exacte qu'elle a toujours eue.
+  const invite = estModeInvite();
+  const p = invite ? brut.toLowerCase() : brut;
+  return zones().some(zone => {
+    const z = invite ? zone.toLowerCase() : zone;
+    return p.startsWith(z) || `${p}/` === z;
+  });
 }
 
 // --- la fenetre de deverrouillage ------------------------------------------

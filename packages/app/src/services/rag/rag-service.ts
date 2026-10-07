@@ -17,7 +17,7 @@ import type {
   VaultReader,
 } from '@/services/rag/types';
 import type { ToolResponse } from '@/mcp/handlers/types';
-import { estModeInvite, filtrerResultats } from '@/services/securite/zones-sensibles';
+import { estModeInvite, estSensible, filtrerResultats } from '@/services/securite/zones-sensibles';
 
 const INDEX_VERSION = 1;
 const DEFAULT_TOP_K = 8;
@@ -161,6 +161,14 @@ export class RagService {
 
   /** Read-only view of the in-memory embedded chunks (consumed by Synapses). */
   get embeddedChunks(): readonly EmbeddedChunk[] {
+    // Dan : le graphe et les synapses lisent ces extraits SANS passer par
+    // retrieve(). Une zone ajoutee apres l'indexation (CERVEAU_ZONES_SENSIBLES)
+    // ne doit pas attendre la prochaine reindexation pour disparaitre.
+    if (estModeInvite()) {
+      return this.chunks.filter(
+        c => !estSensible(c.file) && !c.file.split('/').some(s => s.startsWith('.')),
+      );
+    }
     return this.chunks;
   }
 

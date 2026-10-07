@@ -286,13 +286,14 @@ describe('Dan : critere 5 et securite de l auth', () => {
 describe('Dan : flux OAuth complet avec le code d un ami', () => {
   async function connecter(m: Monde): Promise<{ access: string; refresh: string }> {
     const agent = request.agent(m.dan.app);
-    const verifier = 'verificateur-pkce-de-test-assez-long-pour-plain-1234567890';
+    const verifier = 'verificateur-pkce-de-test-assez-long-pour-s256-1234567890';
+    const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
     const auth = await agent.get('/oauth/authorize').query({
       response_type: 'code',
       client_id: CLIENT_ID,
-      redirect_uri: 'http://client.test/callback',
-      code_challenge: verifier,
-      code_challenge_method: 'plain',
+      redirect_uri: 'http://localhost:5555/callback',
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
       state: 'xyz',
     });
     expect(auth.headers.location).toBe('/login');
@@ -303,7 +304,7 @@ describe('Dan : flux OAuth complet avec le code d un ami', () => {
       grant_type: 'authorization_code',
       code,
       code_verifier: verifier,
-      redirect_uri: 'http://client.test/callback',
+      redirect_uri: 'http://localhost:5555/callback',
       client_id: CLIENT_ID,
       client_secret: CLIENT_SECRET,
     });

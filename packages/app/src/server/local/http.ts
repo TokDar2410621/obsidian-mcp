@@ -452,11 +452,19 @@ registerMcpRoute(app, mcpServer);
 if (ragService) {
   // organs: vault for the echoes file (spreading activation at every push),
   // reflection for the opt-in micro-wake (EVENT_REFLECTION=on).
-  registerGithubWebhook(app, ragService, graphService, objectiveSweep, captureLink, {
-    vault: vaultManager,
-    reflection,
-    rafraichirEnPlus: skillsService ? () => skillsService.refresh() : null,
-  });
+  // Profil neutre : les balayages ne repartent pas non plus par le webhook.
+  registerGithubWebhook(
+    app,
+    ragService,
+    graphService,
+    cronPermis('OBJECTIVE_SWEEP') ? objectiveSweep : null,
+    cronPermis('CAPTURE_LINK') ? captureLink : null,
+    {
+      vault: vaultManager,
+      reflection,
+      rafraichirEnPlus: skillsService ? () => skillsService.refresh() : null,
+    },
+  );
 }
 
 const PORT = parseInt(process.env.PORT || '3000');
