@@ -4,6 +4,7 @@ import type { VaultManager } from '@/services/vault-manager';
 import { toVaultRelativePath } from '@/services/vault-manager';
 import { estSensible } from '@/services/securite/zones-sensibles';
 import type { VaultReader } from '@/services/rag/types';
+import { masquerDonneesPersonnelles } from '@/services/invites/masquage';
 import { logger } from '@/utils/logger';
 
 /**
@@ -127,7 +128,7 @@ export class VaultInvite implements VaultManager {
       logger.warn('Dan : lien symbolique hors perimetre refuse');
       throw new Error(messageIntrouvable(relativePath));
     }
-    return contenu;
+    return masquerDonneesPersonnelles(contenu);
   }
 
   async readBinaryFile(relativePath: string): Promise<Buffer> {
@@ -151,10 +152,11 @@ export class VaultInvite implements VaultManager {
         }
       }
     }
-    for (const rel of [...lus.keys()]) {
-      if (!(await this.cibleSure(rel))) lus.delete(rel);
+    const masques = new Map<string, string>();
+    for (const [rel, contenu] of lus) {
+      if (await this.cibleSure(rel)) masques.set(rel, masquerDonneesPersonnelles(contenu));
     }
-    return lus;
+    return masques;
   }
 
   async fileExists(relativePath: string): Promise<boolean> {

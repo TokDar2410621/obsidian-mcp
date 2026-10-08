@@ -149,7 +149,7 @@ describe('constat 1 : fichiers techniques et caches', () => {
     // Une question qui NOMME le terme le retrouve dans l'echo du perroquet :
     // ce qui compte, ce sont les extraits fournis au LLM.
     await appel(app, t, 'ask-cerveau', { question: `Que dit ${SECRET} ?` });
-    expect(app.rag!.embeddedChunks.map(c => c.file)).toEqual(['05-projects/offre/playbook.md', 'Journal/2026-07-08.md']);
+    expect(app.rag!.embeddedChunks.map(c => c.file)).toEqual(['05-projects/offre/playbook.md']);
     for (const p of llm.vus) expect(p.split('Question :')[0]).not.toContain(SECRET);
   });
 });
@@ -240,17 +240,19 @@ describe('constat 3 : index perime et zones ajoutees', () => {
 
   it('une zone ajoutee apres l indexation disparait aussitot du graphe et des synapses', async () => {
     const { app } = await dan();
-    expect(app.rag!.embeddedChunks.some(c => c.file.startsWith('Journal/'))).toBe(true);
-    process.env.CERVEAU_ZONES_SENSIBLES = 'Journal/';
-    expect(app.rag!.embeddedChunks.some(c => c.file.startsWith('Journal/'))).toBe(false);
+    expect(app.rag!.embeddedChunks.some(c => c.file.startsWith('05-projects/offre/'))).toBe(true);
+    process.env.CERVEAU_ZONES_SENSIBLES = '05-projects/offre/';
+    expect(app.rag!.embeddedChunks.some(c => c.file.startsWith('05-projects/offre/'))).toBe(false);
   });
 });
 
 describe('constat 5 : zones d environnement mal ecrites', () => {
-  it.each(['/Journal/', './Journal/', 'Journal\\', 'journal/', ' Journal '])('%s cache bien Journal/', async zone => {
-    process.env.CERVEAU_ZONES_SENSIBLES = zone;
+  it.each(['/05-projects/offre/', './05-projects/offre/', '05-projects\\offre\\', '05-PROJECTS/Offre/', ' 05-projects/offre '])('%s cache bien 05-projects/offre/', async zone => {
     const v = new VaultInvite(coffre());
-    await expect(v.readFile('Journal/2026-07-08.md')).rejects.toThrow('Introuvable');
+    // Temoin : visible tant que la zone n'est pas posee.
+    expect(await v.readFile('05-projects/offre/playbook.md')).toContain('Playbook');
+    process.env.CERVEAU_ZONES_SENSIBLES = zone;
+    await expect(v.readFile('05-projects/offre/playbook.md')).rejects.toThrow('Introuvable');
   });
 });
 
