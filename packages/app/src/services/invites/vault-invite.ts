@@ -36,6 +36,19 @@ import { logger } from '@/utils/logger';
  * de reponse dirait quels prefixes sont des zones.
  */
 
+/**
+ * La vraie cause d'un echec, pour les logs de Darius seulement (jamais pour
+ * l'ami) : sans elle, un clone en panne ne laissait qu'un « Introuvable »
+ * vide. Le jeton git, s'il traine dans le message, est masque.
+ */
+export function causeJournalisable(erreur: unknown): string {
+  return String(erreur)
+    .replace(/x-access-token:[^@\s]+@/g, 'x-access-token:***@')
+    .replace(/(gh[pousr]_|github_pat_)[A-Za-z0-9_]+/g, '***')
+    .replace(/\bsk-[A-Za-z0-9_-]{10,}/g, '***')
+    .slice(0, 400);
+}
+
 export function messageIntrouvable(chemin: string): string {
   return `Introuvable : « ${chemin} » n'existe pas ou n'est pas accessible.`;
 }
@@ -121,7 +134,7 @@ export class VaultInvite implements VaultManager {
     try {
       contenu = await this.interne.readFile(rel);
     } catch (error) {
-      logger.debug('Dan : lecture impossible', { error: String(error) });
+      logger.debug('Dan : lecture impossible', { cause: causeJournalisable(error) });
       throw new Error(messageIntrouvable(relativePath));
     }
     if (!(await this.cibleSure(rel))) {
@@ -185,7 +198,8 @@ export class VaultInvite implements VaultManager {
     let entrees: string[];
     try {
       entrees = await this.interne.listFiles(base, options);
-    } catch {
+    } catch (error) {
+      logger.warn('Dan : listing impossible', { cause: causeJournalisable(error) });
       throw new Error(messageIntrouvable(relativePath ?? ''));
     }
     return entrees
