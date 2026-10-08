@@ -45,7 +45,10 @@ export class GitVaultManager implements VaultManager {
   private lazyTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(config: VaultConfig) {
-    this.config = config;
+    // Un jeton colle depuis une interface emporte souvent un saut de ligne :
+    // l'URL authentifiee devient invalide et le clone echoue en quelques ms
+    // (premier boot de Dan, 2026-10-08 : 94 caracteres pour 93).
+    this.config = { ...config, gitToken: (config.gitToken ?? '').trim() };
   }
 
   /**
