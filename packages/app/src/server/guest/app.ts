@@ -39,6 +39,17 @@ import { logger } from '@/utils/logger';
  * synapses, catalogue de skills. Les zones cachees n'y entrent jamais.
  */
 
+/**
+ * Dan raisonne-t-il lui-meme ? Non, sauf GUEST_LLM=on (decision 17 du
+ * 2026-10-08) : le Claude de l'ami fait le raisonnement, Dan sert le savoir.
+ * Avant, OPENAI_API_KEY seule suffisait a hasChatProvider() : Dan appelait
+ * OpenAI avec un nom de modele Claude et ask-cerveau, le graphe et les
+ * synapses tombaient tous en panne au premier boot.
+ */
+export function llmDanDemande(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (env.GUEST_LLM ?? '').trim().toLowerCase() === 'on';
+}
+
 export interface DependancesDan {
   /** Le coffre brut ; Dan l'enveloppe lui-meme dans VaultInvite. */
   vault: VaultManager;
@@ -130,7 +141,7 @@ export function creerAppDan(deps: DependancesDan): AppDan {
   // serverInfo, le SDK les ignore et le client ne les recoit jamais.
   const mcpServer = new McpServer(
     { name: nom, version: '1.0.0' },
-    { instructions: instructionsDan(nom) },
+    { instructions: instructionsDan(nom, Boolean(deps.completer)) },
   );
   const outils = serveurInvite(mcpServer, {
     invites: deps.invites,
