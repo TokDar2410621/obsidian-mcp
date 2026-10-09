@@ -8,8 +8,9 @@
  * Variables requises : GUEST_MODE=true, VAULT_REPO, VAULT_BRANCH, GIT_TOKEN
  * (lecture seule), OAUTH_CLIENT_SECRET, BASE_URL, DATABASE_URL (base PROPRE a
  * Dan : jamais celle de l'instance perso).
- * Optionnelles : OPENAI_API_KEY (recherche + skills), une cle LLM dediee
- * (ANTHROPIC_API_KEY, ou LLM_BASE_URL + LLM_API_KEY), GUEST_LLM_MODEL,
+ * Optionnelles : OPENAI_API_KEY (recherche + skills), GUEST_LLM=on (coupe par
+ * defaut : decision 17) avec une cle LLM dediee (ANTHROPIC_API_KEY, ou
+ * LLM_BASE_URL + LLM_API_KEY) et GUEST_LLM_MODEL,
  * GUEST_QUOTA_JOUR (defaut 100), GUEST_SERVER_NAME (defaut Dan),
  * RAG_INDEX_DIR, GITHUB_WEBHOOK_SECRET, CERVEAU_ZONES_SENSIBLES (s'ajoute).
  */
@@ -26,7 +27,7 @@ import { estModeInvite } from '@/services/securite/zones-sensibles';
 import { OpenAiEmbeddingProvider } from '@/services/rag/embeddings';
 import { SettingsBackedCompleter, hasChatProvider } from '@/services/llm/settings-completer';
 import { getSettingsStore } from '@/services/settings/settings-store';
-import { creerAppDan } from '@/server/guest/app';
+import { creerAppDan, llmDanDemande } from '@/server/guest/app';
 
 loadEnv();
 configureLogger({ stream: process.stdout, minLevel: (process.env.LOG_LEVEL as any) || 'info' });
@@ -69,7 +70,11 @@ settings.update({
   ...(process.env.GUEST_LLM_MODEL?.trim() ? { llm: { model: process.env.GUEST_LLM_MODEL.trim() } } : {}),
   retrieval: { rerank: false },
 });
-const completer = hasChatProvider() ? new SettingsBackedCompleter(settings) : null;
+// Sans GUEST_LLM=on, Dan ne raisonne pas (decision 17) : zero cout LLM.
+if (llmDanDemande() && !hasChatProvider()) {
+  logger.warn('Dan : GUEST_LLM=on mais aucune cle LLM, le LLM reste coupe.');
+}
+const completer = llmDanDemande() && hasChatProvider() ? new SettingsBackedCompleter(settings) : null;
 const embedder = process.env.OPENAI_API_KEY?.trim()
   ? new OpenAiEmbeddingProvider(
       process.env.OPENAI_API_KEY.trim(),
@@ -98,7 +103,7 @@ const server = dan.app.listen(PORT, () => {
   console.log(`✓ ${NOM} en ligne sur ${BASE_URL} (lecture seule, aucun cron)`);
   console.log(`  MCP : POST ${BASE_URL}/mcp   Sante : GET ${BASE_URL}/health`);
   if (!embedder) console.log('  (sans OPENAI_API_KEY : ni recherche semantique ni find-skill)');
-  if (!completer) console.log('  (sans cle LLM : ni ask-cerveau, ni synapses, ni graphe)');
+  if (!completer) console.log("  (LLM coupe : ni ask-cerveau, ni synapses, ni graphe ; le Claude de l'ami raisonne)");
   dan.demarrer().catch(error => logger.error('Dan : demarrage des index en echec', { error: String(error) }));
 });
 

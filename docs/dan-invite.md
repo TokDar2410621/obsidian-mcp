@@ -55,8 +55,7 @@ Dans le projet Railway `gracious-joy`, à côté de `obsidian-mcp` :
 | `BASE_URL` | `https://<domaine de dan>` |
 | `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET` | nouveaux, propres à Dan |
 | `OPENAI_API_KEY` | une clé DÉDIÉE (projet OpenAI « Dan ») : la facture des amis se lit à part |
-| `ANTHROPIC_API_KEY` | une clé DÉDIÉE, ou `LLM_BASE_URL` + `LLM_API_KEY` |
-| `GUEST_LLM_MODEL` | un modèle économique, capacités vérifiées avant (règle `verifier-capacites-avant-migration-modele`) |
+| `GUEST_LLM` | NE PAS poser (défaut : LLM coupé, décision 17). `on` ouvre ask-cerveau, le graphe et les synapses, et exige alors une clé LLM DÉDIÉE (`ANTHROPIC_API_KEY`, ou `LLM_BASE_URL` + `LLM_API_KEY`) et `GUEST_LLM_MODEL`, capacités vérifiées avant (règle `verifier-capacites-avant-migration-modele`) |
 | `GUEST_QUOTA_JOUR` | `100` |
 | `GUEST_SERVER_NAME` | `Dan` |
 | `GUEST_REDIRECT_URIS` | facultatif : redirect_uri exactes en plus de claude.ai et de la boucle locale |
@@ -65,7 +64,7 @@ Dans le projet Railway `gracious-joy`, à côté de `obsidian-mcp` :
 À NE PAS poser sur Dan : `CERVEAU_JETON_LOCAL`, `PERSONAL_AUTH_TOKEN`, `CERVEAU_MOT_DE_PASSE`, `NTFY_TOPIC`, `CAPTURE_TOKEN`, `CERVEAU_API_TOKEN`, `STRIPE_API_KEY`, `GOOGLE_OAUTH_*`, les variables du bucket. Dan ignore le jeton local et le jeton personnel même s'ils sont posés, et le dit dans ses logs.
 
 5. **Le webhook.** Dans le dépôt du coffre sur GitHub : un SECOND webhook vers `https://<domaine de dan>/webhook/github`, `application/json`, événement `push`, secret = `GITHUB_WEBHOOK_SECRET` de Dan.
-6. **Le premier boot.** Suivre `railway logs -s dan` jusqu'à `Dan : aucun cron`, `Dan : index pret`, `Dan : catalogue de skills pret`. Coûts du premier boot : environ 0,15 $ d'embeddings (1 945 notes) et quelques dollars de LLM pour le graphe ; ensuite seuls les deltas sont recalculés.
+6. **Le premier boot.** Suivre `railway logs -s dan` jusqu'à `Dan : aucun cron`, `Dan : index pret`, `Dan : catalogue de skills pret`. Coûts du premier boot : environ 0,15 $ d'embeddings (1 945 notes) et aucun LLM ; ensuite seuls les deltas sont recalculés. Le log annonce `LLM coupe` : c'est voulu, le Claude de l'ami fait le raisonnement.
 7. **La vérification.** `curl https://<domaine de dan>/health` répond `ok`. Un appel MCP sans token rend 401.
 
 ## Les amis

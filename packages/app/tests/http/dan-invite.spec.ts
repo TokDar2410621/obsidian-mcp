@@ -10,7 +10,7 @@ import { build } from 'esbuild';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { configureLogger } from '@/utils/logger';
 import { createInMemoryAuthStore, setAuthStore, getAuthStore, clearRefreshGrace } from '@/services/auth';
-import { creerAppDan, type AppDan } from '@/server/guest/app';
+import { creerAppDan, llmDanDemande, type AppDan } from '@/server/guest/app';
 import { registerMcpRoute } from '@/server/shared/mcp-routes';
 import { InviteStoreMemoire, type Invite } from '@/services/invites/invite-store';
 import { messageQuota } from '@/services/invites/serveur-invite';
@@ -93,7 +93,7 @@ interface Monde {
   llm: LlmPerroquet;
 }
 
-async function monde(options: { quotaJour?: number } = {}): Promise<Monde> {
+async function monde(options: { quotaJour?: number; sansLlm?: boolean } = {}): Promise<Monde> {
   const vault = coffre();
   const invites = new InviteStoreMemoire();
   const { invite: paul, secret: secretPaul } = await invites.creer('Paul');
@@ -102,7 +102,7 @@ async function monde(options: { quotaJour?: number } = {}): Promise<Monde> {
     vault,
     invites,
     embedder: new EmbedderSacDeMots(),
-    completer: llm,
+    completer: options.sansLlm ? null : llm,
     indexDir: mkdtempSync(path.join(tmpdir(), 'dan-index-')),
     persist: false,
     lecteur: (v): VaultReader => ({
@@ -206,6 +206,40 @@ describe('Dan : identite et outils exposes', () => {
     }
     const desc = (res.body.result.tools as Array<{ name: string; description: string }>).find(x => x.name === 'read-note')!.description;
     expect(desc).toContain("Dan, l'IA de Darius");
+  });
+});
+
+describe('Dan sans LLM : decision 17, le defaut en production', () => {
+  it('ne demande le LLM que sur GUEST_LLM=on, meme avec une cle OpenAI posee', () => {
+    expect(llmDanDemande({})).toBe(false);
+    expect(llmDanDemande({ OPENAI_API_KEY: 'sk-test', ANTHROPIC_API_KEY: 'cle' })).toBe(false);
+    expect(llmDanDemande({ GUEST_LLM: 'true' })).toBe(false);
+    expect(llmDanDemande({ GUEST_LLM: ' ON ' })).toBe(true);
+  });
+
+  it("sert le savoir sans aucun outil qui raisonne, et les instructions ne nomment pas ask-cerveau", async () => {
+    const m = await monde({ sansLlm: true });
+    const t = await tokenPour(m.paul.id);
+    const init = await rpc(m.dan.app, t, 'initialize', {
+      protocolVersion: '2025-03-26',
+      capabilities: {},
+      clientInfo: { name: 'test', version: '1' },
+    });
+    expect(init.body.result.instructions).toContain('search-cerveau');
+    expect(init.body.result.instructions).not.toContain('ask-cerveau');
+    const res = await rpc(m.dan.app, t, 'tools/list');
+    const noms = (res.body.result.tools as Array<{ name: string }>).map(x => x.name);
+    for (const attendu of ['read-note', 'read-notes', 'list-files-in-vault', 'search-vault', 'search-cerveau', 'find-skill', 'read-skill']) {
+      expect(noms).toContain(attendu);
+    }
+    for (const absent of ['ask-cerveau', 'graph-cerveau', 'graph-overview', 'find-themes', 'suggest-links', 'cerveau-digest']) {
+      expect(noms).not.toContain(absent);
+    }
+    expect(m.dan.graph).toBeNull();
+    expect(m.dan.synapses).toBeNull();
+    const trouve = await outil(m, t, 'search-cerveau', { query: 'offre solution douleur' });
+    expect(trouve.isError).toBeFalsy();
+    expect(m.llm.vus).toHaveLength(0);
   });
 });
 
