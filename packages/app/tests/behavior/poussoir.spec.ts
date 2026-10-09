@@ -102,6 +102,85 @@ describe('Poussoir : envoi du matin', () => {
     expect(notify.pushed[0].title).toContain('à sec');
   });
 
+  it('un geste repousse 3 jours sans suite se retire : une seule question, plus de rappel', async () => {
+    const { vault, notify, service } = fabrique({
+      fichiers: {
+        '08-auto/_poussoir.md': FILE_2_GESTES,
+        '08-auto/_poussoir-state.json': JSON.stringify({
+          version: 1,
+          serie: 0,
+          dernierFait: null,
+          dernierTraite: null,
+          dernierEnvoi: null,
+          derniereRelance: null,
+          dernierVide: null,
+          gesteCourantTitre: 'Poster le fil LinkedIn sur le bug published_at',
+          gesteCourantDepuis: '2026-08-01', // servi depuis 3 jours pleins (MATIN = le 04)
+        }),
+      },
+    });
+    const r = await service.envoiMatin();
+    expect(r.envoye).toBe(true);
+    expect(r.raison).toContain('retire');
+    expect(notify.pushed).toHaveLength(1);
+    expect(notify.pushed[0].title).toContain('dort');
+    expect(notify.pushed[0].message).toContain('blocage-demander-pourquoi');
+    const contenu = await vault.readFile('08-auto/_poussoir.md');
+    const { courant } = parseFile(contenu);
+    expect(courant?.titre).toContain('annuaires'); // la file a avance
+    const etat = JSON.parse(await vault.readFile('08-auto/_poussoir-state.json')) as {
+      gesteCourantTitre: string | null;
+    };
+    expect(etat.gesteCourantTitre).toBeNull();
+  });
+
+  it('avant le seuil, le meme geste continue de pousser normalement chaque jour', async () => {
+    const { notify, service } = fabrique({
+      fichiers: {
+        '08-auto/_poussoir.md': FILE_2_GESTES,
+        '08-auto/_poussoir-state.json': JSON.stringify({
+          version: 1,
+          serie: 0,
+          dernierFait: null,
+          dernierTraite: null,
+          dernierEnvoi: null,
+          derniereRelance: null,
+          dernierVide: null,
+          gesteCourantTitre: 'Poster le fil LinkedIn sur le bug published_at',
+          gesteCourantDepuis: '2026-08-03', // servi depuis 1 jour seulement
+        }),
+      },
+    });
+    const r = await service.envoiMatin();
+    expect(r.envoye).toBe(true);
+    expect(r.raison).toBeUndefined();
+    expect(notify.pushed[0].title).toContain('Geste du jour');
+    expect(notify.pushed[0].message).toContain('LinkedIn');
+  });
+
+  it('un geste different repart le compteur a zero, meme si l ancien dormait', async () => {
+    const { notify, service } = fabrique({
+      fichiers: {
+        '08-auto/_poussoir.md': FILE_2_GESTES,
+        '08-auto/_poussoir-state.json': JSON.stringify({
+          version: 1,
+          serie: 0,
+          dernierFait: null,
+          dernierTraite: null,
+          dernierEnvoi: null,
+          derniereRelance: null,
+          dernierVide: null,
+          gesteCourantTitre: 'Un tout autre geste, deja consomme',
+          gesteCourantDepuis: '2026-07-01',
+        }),
+      },
+    });
+    const r = await service.envoiMatin();
+    expect(r.envoye).toBe(true);
+    expect(r.raison).toBeUndefined();
+    expect(notify.pushed[0].title).toContain('Geste du jour');
+  });
+
   it('un jour raté se dit en face : série perdue', async () => {
     const { notify, service } = fabrique({
       fichiers: {
